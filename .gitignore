@@ -1,0 +1,5 @@
+target/
+.maven/
+llama-server.log
+.idea/
+*.iml
