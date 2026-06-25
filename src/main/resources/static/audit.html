@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RoleFlow — Audit</title>
+    <style>
+        :root { color-scheme: light dark; }
+        body {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+            max-width: 900px;
+            margin: 1.5rem auto;
+            padding: 0 1rem;
+            line-height: 1.45;
+        }
+        h1 { margin-bottom: 0.1rem; }
+        .meta { opacity: 0.75; font-size: 0.9rem; margin-bottom: 1rem; }
+        .status { font-weight: 600; }
+        .status.live::before { content: "● "; color: #16a34a; }
+        .status.done::before { content: "✓ "; color: #2563eb; }
+        .event {
+            border: 1px solid #8884;
+            border-left-width: 4px;
+            border-radius: 6px;
+            padding: 0.5rem 0.75rem;
+            margin: 0.6rem 0;
+        }
+        .event .head { font-weight: 600; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: baseline; }
+        .event .type { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+        .event .time { margin-left: auto; opacity: 0.6; font-size: 0.8rem; font-weight: 400; }
+        .event .field { margin-top: 0.35rem; }
+        .event .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; opacity: 0.6; }
+        .event pre {
+            white-space: pre-wrap;
+            margin: 0.15rem 0 0;
+            padding: 0.5rem;
+            background: #8881;
+            border-radius: 4px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 0.85rem;
+        }
+        /* Colour the left border by event type. */
+        .t-RUN_STARTED { border-left-color: #6b7280; }
+        .t-ROLE_STARTED { border-left-color: #2563eb; }
+        .t-MODEL_REQUEST { border-left-color: #d97706; }
+        .t-MODEL_RESPONSE { border-left-color: #16a34a; }
+        .t-ARTIFACT_WRITTEN { border-left-color: #7c3aed; }
+        .t-TRANSITION { border-left-color: #0891b2; }
+        .t-CLARIFICATION_PAUSE { border-left-color: #eab308; }
+        .t-RUN_COMPLETED { border-left-color: #2563eb; }
+        .t-MODEL_ERROR { border-left-color: #dc2626; }
+        a { color: #2563eb; }
+    </style>
+</head>
+<body>
+    <h1>RoleFlow audit</h1>
+    <div class="meta" id="meta">Loading…</div>
+    <div id="events"></div>
+
+    <script>
+        const params = new URLSearchParams(location.search);
+        const promptId = params.get("prompt");
+        const runId = params.get("run");
+        const url = promptId ? `/audit/${encodeURIComponent(promptId)}`
+                  : runId   ? `/audit/run/${encodeURIComponent(runId)}`
+                  : null;
+
+        const metaEl = document.getElementById("meta");
+        const eventsEl = document.getElementById("events");
+        let renderedCount = 0;
+
+        if (!url) {
+            metaEl.textContent = "No prompt or run id supplied. Open this page as audit.html?prompt=<id>.";
+        } else {
+            poll();
+        }
+
+        function escapeHtml(s) {
+            return (s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+        }
+
+        function field(label, value) {
+            if (value === null || value === undefined || value === "") return "";
+            return `<div class="field"><div class="label">${label}</div><pre>${escapeHtml(value)}</pre></div>`;
+        }
+
+        function renderEvent(e) {
+            const div = document.createElement("div");
+            div.className = `event t-${e.type}`;
+            let body = "";
+            if (e.role) body += field("role" + (e.iteration ? ` (iteration ${e.iteration})` : ""), e.role);
+            body += field("system prompt", e.systemPrompt);
+            body += field("user prompt", e.userPrompt);
+            body += field("model response", e.response);
+            if (e.decision) body += field("decision", e.decision);
+            body += field("transition", e.transition);
+            body += field("detail", e.detail);
+            div.innerHTML =
+                `<div class="head"><span class="type">${e.type}</span>` +
+                `<span class="time">#${e.seq} · ${escapeHtml(e.timestamp)}</span></div>${body}`;
+            return div;
+        }
+
+        async function poll() {
+            try {
+                const res = await fetch(url, { cache: "no-store" });
+                if (res.ok) {
+                    const view = await res.json();
+                    update(view);
+                    if (view.completed) {
+                        metaEl.querySelector(".status")?.classList.replace("live", "done");
+                        return; // stop polling
+                    }
+                } else if (res.status === 404) {
+                    metaEl.textContent = "No audit trail found yet…";
+                }
+            } catch (err) {
+                metaEl.textContent = "Connection error: " + err.message;
+            }
+            setTimeout(poll, 1000);
+        }
+
+        function update(view) {
+            const events = view.events || [];
+            const id = view.runId || view.promptId || promptId || runId;
+            const statusClass = view.completed ? "done" : "live";
+            const statusText = view.completed ? "completed" : (id ? "in progress…" : "waiting to start…");
+            metaEl.innerHTML =
+                `run: <code>${escapeHtml(view.runId || "(pending)")}</code>` +
+                (view.source ? ` · source: ${escapeHtml(view.source)}` : "") +
+                ` · <span class="status ${statusClass}">${statusText}</span>`;
+
+            // Append only new events so the page streams smoothly.
+            const nearBottom = (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 80);
+            for (let i = renderedCount; i < events.length; i++) {
+                eventsEl.appendChild(renderEvent(events[i]));
+            }
+            renderedCount = events.length;
+            if (nearBottom) window.scrollTo(0, document.body.scrollHeight);
+        }
+    </script>
+</body>
+</html>

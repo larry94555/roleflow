@@ -1,6 +1,7 @@
 target/
 .maven/
 llama-server.log
+audit.log
 .idea/
 *.iml
 

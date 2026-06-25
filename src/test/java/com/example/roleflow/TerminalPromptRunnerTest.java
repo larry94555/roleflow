@@ -22,11 +22,12 @@ class TerminalPromptRunnerTest {
         boolean fail;
 
         StubConversationService() {
-            super(null, null, null, null, 0, "");
+            super(null, null, null, null, null, 0, "");
         }
 
         @Override
-        public String reply(String systemOverride, String userPrompt, Integer maxTokens, Double temperature) {
+        public String reply(String systemOverride, String userPrompt, Integer maxTokens, Double temperature,
+                            String auditId, String source) {
             prompts.add(userPrompt);
             if (fail) throw new IllegalStateException("server down");
             return "echo:" + userPrompt;

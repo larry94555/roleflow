@@ -33,63 +33,99 @@ public class RoleFlowEngine {
     private final RoleFlowConfig config;
     private final RoleFlowSession session;
     private final GoalFileWriter writer;
+    private final AuditService audit;
     private final ObjectMapper mapper;
     private final int maxSteps;
 
     public RoleFlowEngine(RoleFlowConfig config, RoleFlowSession session, GoalFileWriter writer,
-                          ObjectMapper mapper, @Value("${roleflow.max-steps:20}") int maxSteps) {
+                          AuditService audit, ObjectMapper mapper,
+                          @Value("${roleflow.max-steps:20}") int maxSteps) {
         this.config = config;
         this.session = session;
         this.writer = writer;
+        this.audit = audit;
         this.mapper = mapper;
         this.maxSteps = Math.max(1, maxSteps);
     }
 
     /**
      * Runs the workflow for one user prompt and returns the text to show the user (the message from the
-     * role where the run completed or paused for clarification).
+     * role where the run completed or paused for clarification). Every step is recorded to the audit trail
+     * for {@code runId}; {@code auditId} (an optional client-supplied id) is linked to that run so the
+     * audit web page can find it.
      */
     public String run(String userPrompt, String systemOverride, Integer maxTokens, Double temperature,
-                      ModelInvoker model) throws Exception {
-        if (session.isIdle()) {
+                      ModelInvoker model, String auditId, String source) throws Exception {
+        boolean fresh = session.isIdle();
+        if (fresh) {
             session.begin(config.firstRole().name());
         }
+        String runId = session.runId();
+        if (fresh) {
+            audit.runStarted(runId, source);
+        }
+        audit.link(auditId, runId);
 
         String lastMessage = "";
         for (int step = 0; step < maxSteps; step++) {
             Role role = config.byName(session.currentRole());
             if (role == null) { // a transition pointed at a role that does not exist
+                audit.runCompleted(runId, session.currentRole());
                 session.reset();
                 return lastMessage;
             }
 
+            audit.roleStarted(runId, role.name());
             String systemPrompt = buildSystemPrompt(role, systemOverride);
-            String raw = model.invoke(systemPrompt, userPrompt, maxTokens, temperature);
+            audit.modelRequest(runId, role.name(), systemPrompt, userPrompt);
+
+            String raw;
+            try {
+                raw = model.invoke(systemPrompt, userPrompt, maxTokens, temperature);
+            } catch (Exception e) {
+                audit.modelError(runId, role.name(), e.getMessage());
+                throw e;
+            }
             RoleFlowReply reply = RoleFlowReply.parse(raw, mapper);
+            audit.modelResponse(runId, role.name(), raw, reply.decision());
             lastMessage = reply.message().isBlank() ? raw.trim() : reply.message();
 
             if (role.hasOutput() && !reply.artifact().isBlank()) {
-                String path = writer.write(role.outputKind(), session.runId(), reply.artifact());
+                String path = writer.write(role.outputKind(), runId, reply.artifact());
                 session.addArtifact(role.outputKind(), reply.artifact(), path);
+                audit.artifactWritten(runId, role.name(), role.outputKind(), path);
             }
 
             String target = role.resolve(reply.decision());
             if (target == null || Role.DONE.equalsIgnoreCase(target)) {
+                audit.transition(runId, role.name(),
+                        "decision '" + reply.decision() + "' -> done (run complete)");
+                audit.runCompleted(runId, role.name());
                 session.reset();
                 return lastMessage;
             }
             if (target.equalsIgnoreCase(role.name())) {
                 // Self-transition: the role asked the user something; pause and wait for their reply.
+                audit.transition(runId, role.name(),
+                        "decision '" + reply.decision() + "' -> " + role.name()
+                                + " (same role: asking the user, waiting for a reply)");
+                audit.clarificationPause(runId, role.name(), lastMessage);
                 return lastMessage;
             }
             if (config.byName(target) == null) {
+                audit.transition(runId, role.name(),
+                        "decision '" + reply.decision() + "' -> " + target + " (no such role: run complete)");
+                audit.runCompleted(runId, role.name());
                 session.reset();
                 return lastMessage;
             }
+            audit.transition(runId, role.name(),
+                    "decision '" + reply.decision() + "' -> " + config.byName(target).name());
             session.moveTo(config.byName(target).name());
         }
 
         // Safety cap: stop runaway loops.
+        audit.runCompleted(runId, session.currentRole());
         session.reset();
         return lastMessage;
     }

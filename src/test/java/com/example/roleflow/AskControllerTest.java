@@ -18,12 +18,14 @@ class AskControllerTest {
         String reply = "model reply";
 
         RecordingConversationService() {
-            super(null, null, null, null, 0, "");
+            super(null, null, null, null, null, 0, "");
         }
 
         @Override
-        public String reply(String systemOverride, String userPrompt, Integer maxTokens, Double temperature) {
-            calls.add(systemOverride + "|" + userPrompt + "|" + maxTokens + "|" + temperature);
+        public String reply(String systemOverride, String userPrompt, Integer maxTokens, Double temperature,
+                            String auditId, String source) {
+            calls.add(systemOverride + "|" + userPrompt + "|" + maxTokens + "|" + temperature
+                    + "|" + auditId + "|" + source);
             return reply;
         }
     }
@@ -34,10 +36,11 @@ class AskControllerTest {
         AskController controller = new AskController(service);
 
         Map<String, String> response = controller.ask(
-                new AskController.AskRequest("Hello", "Be terse", 64, 0.2));
+                new AskController.AskRequest("Hello", "Be terse", 64, 0.2, "PID-7"));
 
-        assertEquals(Map.of("response", "model reply"), response);
-        assertEquals(List.of("Be terse|Hello|64|0.2"), service.calls);
+        assertEquals("model reply", response.get("response"));
+        assertEquals("PID-7", response.get("auditId"), "the audit id should be echoed back");
+        assertEquals(List.of("Be terse|Hello|64|0.2|PID-7|web"), service.calls);
     }
 
     @Test
@@ -45,9 +48,10 @@ class AskControllerTest {
         RecordingConversationService service = new RecordingConversationService();
         AskController controller = new AskController(service);
 
-        controller.ask(new AskController.AskRequest("Hi", null, null, null));
+        Map<String, String> response = controller.ask(new AskController.AskRequest("Hi", null, null, null, null));
 
-        assertEquals(List.of("null|Hi|null|null"), service.calls);
+        assertEquals(List.of("null|Hi|null|null|null|web"), service.calls);
+        assertTrue(!response.containsKey("auditId"), "no audit id is echoed when none was supplied");
     }
 
     @Test
@@ -56,7 +60,7 @@ class AskControllerTest {
         AskController controller = new AskController(service);
 
         assertThrows(IllegalArgumentException.class,
-                () -> controller.ask(new AskController.AskRequest("   ", null, null, null)));
+                () -> controller.ask(new AskController.AskRequest("   ", null, null, null, null)));
         assertTrue(service.calls.isEmpty());
     }
 

@@ -52,7 +52,7 @@ public class TerminalPromptRunner implements CommandLineRunner {
                 }
                 if (!prompt.isEmpty()) {
                     try {
-                        out.println(conversation.reply(null, prompt, null, null));
+                        out.println(conversation.reply(null, prompt, null, null, null, "terminal"));
                     } catch (Exception e) {
                         out.println("[error] " + e.getMessage());
                     }

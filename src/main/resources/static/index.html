@@ -45,6 +45,8 @@
             min-height: 2.5rem;
         }
         .error { color: #dc2626; }
+        #auditLink { margin-top: 0.75rem; font-size: 0.9rem; display: none; }
+        #auditLink a { color: #2563eb; }
     </style>
 </head>
 <body>
@@ -59,6 +61,8 @@
 
     <button id="send">Send</button>
 
+    <div id="auditLink">🔎 <a id="auditAnchor" href="#" target="_blank" rel="noopener">View audit trail for this prompt ↗</a> (opens in a new tab; updates live)</div>
+
     <div id="response" aria-live="polite"></div>
 
     <script>
@@ -66,6 +70,13 @@
         const promptBox = document.getElementById("prompt");
         const systemBox = document.getElementById("system");
         const responseBox = document.getElementById("response");
+        const auditLink = document.getElementById("auditLink");
+        const auditAnchor = document.getElementById("auditAnchor");
+
+        function newId() {
+            return (crypto.randomUUID && crypto.randomUUID()) ||
+                ("p-" + Date.now() + "-" + Math.random().toString(16).slice(2));
+        }
 
         async function send() {
             const prompt = promptBox.value.trim();
@@ -74,6 +85,15 @@
                 responseBox.classList.add("error");
                 return;
             }
+
+            // Create the audit id up front so the audit link is available immediately, and open the
+            // audit page so it can be watched live while the prompt is processed.
+            const auditId = newId();
+            const auditUrl = "audit.html?prompt=" + encodeURIComponent(auditId);
+            auditAnchor.href = auditUrl;
+            auditLink.style.display = "block";
+            window.open(auditUrl, "_blank", "noopener");
+
             responseBox.classList.remove("error");
             responseBox.textContent = "Thinking…";
             sendButton.disabled = true;
@@ -81,7 +101,7 @@
                 const res = await fetch("/ask", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ prompt, system: systemBox.value.trim() || null })
+                    body: JSON.stringify({ prompt, system: systemBox.value.trim() || null, auditId })
                 });
                 const data = await res.json();
                 if (!res.ok || data.error) {
