@@ -8,11 +8,16 @@ There are two ways to send a prompt:
 1. **From the terminal** — the running application reads prompts from standard input and prints the reply.
 2. **From a web page** — open `http://localhost:8080/` in a browser, type a prompt, and see the response.
 
-The application does exactly three things and nothing more:
+Both share a single **conversation memory**, so each prompt has the context of the ones before it. When
+that memory grows too large to fit the model's context window, it is **compacted** automatically (the way
+Claude Code auto-compacts a long session) — see [Conversation memory](#conversation-memory-and-compaction).
+
+The application does exactly these things and nothing more:
 
 - starts and supervises `llama-server` (same launch behavior as goalmaker),
 - accepts prompts typed at the terminal,
-- serves a simple web page that submits prompts and shows the response.
+- serves a simple web page that submits prompts and shows the response,
+- remembers the conversation and compacts it when it gets too big.
 
 ---
 
@@ -121,6 +126,57 @@ curl -s http://localhost:8080/ask \
 
 ---
 
+## Conversation memory and compaction
+
+RoleFlow keeps a **session memory**: every prompt is sent to the model together with the earlier prompts
+and replies in the session, so the conversation has continuity.
+
+```
+RoleFlow> My name is Ada and I like sailing.
+Nice to meet you, Ada!
+RoleFlow> What's my name and hobby?
+Your name is Ada and you enjoy sailing.   <-- answered from memory
+```
+
+The terminal and the web page share the **same** memory, so you can start a thread in one and continue it
+in the other. A session lasts for as long as the application runs; **restarting the application starts a
+fresh session** (persisting sessions across restarts is planned for later).
+
+### Why compaction is needed
+
+A model has a fixed **context window** — for the default model that window is **8192 tokens**
+(`MAX_TOKEN_SIZE`). Everything sent in a request counts against it: the system prompt, the remembered
+conversation, **and** the new prompt, plus room reserved for the reply. If the conversation just kept
+growing, it would eventually overflow the window and the request would fail.
+
+### What happens when memory gets too big
+
+Before each request RoleFlow estimates the size of `system prompt + remembered conversation + new prompt`
+and compares it against `MAX_TOKEN_SIZE` minus the space reserved for the response. If it would overflow,
+memory is **compacted** the same way Claude Code auto-compacts a long session:
+
+1. The **oldest** turns are removed from the live window first, so the **most recent** turns are always
+   kept verbatim.
+2. Those removed turns are folded into a running **summary** by asking the model to condense them —
+   preserving goals, decisions, names, numbers, and constraints, while dropping verbatim detail.
+3. The summary is carried forward and prepended to future requests as
+   `Summary of earlier conversation: …`. Each later compaction folds the previous summary in with the
+   newly removed turns, so context accumulates instead of being thrown away.
+
+This guarantees the invariant the design requires: **the remembered conversation plus the new prompt are
+always smaller than `MAX_TOKEN_SIZE`.** (If a single prompt is itself larger than the budget, memory is
+cleared and the prompt is sent on its own as a best effort.)
+
+In the terminal you can tell compaction happened because the next answer still "remembers" earlier facts
+even after a long conversation, while older wording is paraphrased rather than quoted exactly.
+
+### Tuning
+
+`MAX_TOKEN_SIZE` is fixed at 8192 for now (it will become more flexible later) but is already exposed as
+`memory.max-tokens`. Related options are in [Configuration](#configuration).
+
+---
+
 ## How to end the application
 
 - Press **Ctrl+C** in the terminal where the application is running. Spring Boot shuts down and stops the
@@ -143,7 +199,10 @@ and can be overridden on the command line, e.g. `--server.port=9000`. The most u
 | `server.port`             | `8080`                 | Port for the web page and REST API.                      |
 | `roleflow.system-prompt`  | *(empty)*              | Default system prompt for terminal/REST calls.           |
 | `roleflow.terminal.enabled` | `true`               | Read prompts from stdin. Set `false` to disable.         |
-| `prompt.max-tokens`       | `1024`                 | Default response length cap.                             |
+| `prompt.max-tokens`       | `1024`                 | Default response length cap (also the response reserve). |
+| `memory.max-tokens`       | `8192`                 | `MAX_TOKEN_SIZE` — memory compacts to stay under this.   |
+| `memory.chars-per-token`  | `4`                    | Chars-per-token ratio used to estimate sizes locally.    |
+| `memory.summary-max-tokens` | `1024`               | Max length of a generated summary during compaction.     |
 | `llama.binary`            | *(empty → on PATH)*    | Full path to `llama-server` if not on `PATH`.            |
 | `llama.profile`           | `small`                | `small` / `medium` / `large` model presets.             |
 | `llama.model-path`        | *(empty)*              | Use a local `.gguf` file instead of a profile download.  |
@@ -160,7 +219,9 @@ mvnw.cmd test        # Windows
 ```
 
 The test suite never launches `llama-server` or reads from stdin (those are disabled in
-`src/test/resources/application.properties`), so it runs fast and offline.
+`src/test/resources/application.properties`), so it runs fast and offline. The memory and compaction
+tests use a fake summarizer and a deterministic token estimator, so they assert the budget invariant
+without calling a model.
 
 ---
 
@@ -170,9 +231,15 @@ The test suite never launches `llama-server` or reads from stdin (those are disa
 src/main/java/com/example/roleflow/
   RoleFlowApplication.java     Spring Boot entry point
   LlamaServerManager.java      Launches and supervises llama-server
-  LlamaClient.java             Calls llama-server's /v1/chat/completions
+  LlamaClient.java             Calls llama-server's /v1/chat/completions (ask + chat)
   AskController.java           POST /ask REST endpoint
   TerminalPromptRunner.java    Reads prompts from the terminal (stdin)
+  ConversationService.java     Runs a prompt against the session memory
+  ConversationMemory.java      Session memory + Claude Code-style compaction
+  Summarizer.java              Interface for folding old turns into a summary
+  LlmSummarizer.java           Default summarizer, backed by the model
+  TokenEstimator.java          Local token-size estimation
+  Message.java                 A chat message (role + content)
 src/main/resources/
   application.properties       Configuration
   static/index.html            The web page

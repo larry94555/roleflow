@@ -25,11 +25,27 @@ class RoleFlowApplicationTests {
     @Autowired
     private LlamaServerManager llamaServerManager;
 
+    @Autowired
+    private ConversationService conversationService;
+
+    @Autowired
+    private ConversationMemory conversationMemory;
+
+    @Autowired
+    private TokenEstimator tokenEstimator;
+
+    @Autowired
+    private Summarizer summarizer;
+
     @Test
     void contextLoads() {
         assertNotNull(askController);
         assertNotNull(llamaClient);
         assertNotNull(terminalPromptRunner);
         assertNotNull(llamaServerManager);
+        assertNotNull(conversationService);
+        assertNotNull(conversationMemory);
+        assertNotNull(tokenEstimator);
+        assertNotNull(summarizer);
     }
 }

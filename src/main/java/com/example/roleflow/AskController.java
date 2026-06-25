@@ -1,6 +1,5 @@
 package com.example.roleflow;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -13,16 +12,15 @@ import java.util.Map;
 /**
  * REST entry point. {@code POST /ask} accepts a user prompt (plus an optional system prompt,
  * max-tokens, and temperature) and returns the model's reply as {@code {"response": "..."}}.
- * The bundled web page and the {@code ask} helper scripts both call this endpoint.
+ * Requests run through {@link ConversationService}, so each prompt sees the context of the ones before
+ * it. The bundled web page and the {@code ask} helper scripts both call this endpoint.
  */
 @RestController
 public class AskController {
-    private final LlamaClient llama;
+    private final ConversationService conversation;
 
-    @Value("${roleflow.system-prompt:}") private String defaultSystem = "";
-
-    public AskController(LlamaClient llama) {
-        this.llama = llama;
+    public AskController(ConversationService conversation) {
+        this.conversation = conversation;
     }
 
     @PostMapping("/ask")
@@ -30,8 +28,8 @@ public class AskController {
         if (request == null || request.prompt() == null || request.prompt().isBlank()) {
             throw new IllegalArgumentException("prompt is required");
         }
-        String system = request.system() != null ? request.system() : defaultSystem;
-        String response = llama.ask(system, request.prompt(), request.maxTokens(), request.temperature());
+        String response = conversation.reply(
+                request.system(), request.prompt(), request.maxTokens(), request.temperature());
         return Map.of("response", response);
     }
 
