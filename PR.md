@@ -1,73 +1,79 @@
-# RoleFlow: minimal Spring Boot prompt service backed by llama-server
+# Add conversation memory with Claude Code-style auto-compaction
 
 ## Summary
 
-Initial version of **RoleFlow**, a minimal Spring Boot application that starts a local `llama-server`
-(using the same launch behavior as goalmaker) and exposes a single REST endpoint for sending a prompt
-and receiving the model's reply. A prompt can be supplied two ways: typed at the terminal, or entered on
-a simple bundled web page.
+RoleFlow now keeps a **conversation memory** so each prompt has the context of the ones before it, and
+**compacts** that memory when it grows too large to fit the model's context window — the same approach
+Claude Code uses to auto-compact a long session. This guarantees the required invariant: **the remembered
+conversation plus the new prompt are always smaller than `MAX_TOKEN_SIZE`** (8192 for now; exposed as
+`memory.max-tokens` and intended to become more flexible later).
 
-The application is intentionally scoped to exactly three responsibilities — **no** tools, web search,
-intermediary, or persistence:
+A session lasts for the lifetime of the process; restarting the app starts a fresh session (persistence
+is left for a future change, as discussed). The terminal and the web page share one session.
 
-1. Start and supervise `llama-server`.
-2. Accept prompts typed at the terminal (stdin).
-3. Serve a simple web page that submits prompts and shows the response.
+## How it works
 
-## What's included
+Before each request, the memory estimates `system prompt + running summary + retained turns + new prompt`
+and compares it to `memory.max-tokens` minus the reserved response space. When it would overflow:
 
-- **`LlamaServerManager`** — launches and supervises `llama-server`. Command construction, health-check
-  polling, and the auto-restart watchdog are carried over unchanged from goalmaker (same flags, same
-  defaults). Field initializers mirror the `@Value` defaults so the command builder is unit-testable.
-- **`LlamaClient`** — calls llama-server's OpenAI-compatible `/v1/chat/completions` endpoint. Supports a
-  **system prompt**, **user prompt**, optional **max tokens**, and optional **temperature**.
-- **`AskController`** — `POST /ask` accepting `{ prompt, system?, maxTokens?, temperature? }` and
-  returning `{ response }` (or `{ error }` with HTTP 400 for invalid input).
-- **`TerminalPromptRunner`** — reads prompts from stdin on a daemon thread and prints replies; `exit`/
-  `quit` stops the reader. Disabled automatically during tests.
-- **`static/index.html`** — a dependency-free web page with system/prompt fields that posts to `/ask`.
-- **Helper scripts** — `run.bat` to start the app, `ask.bat` to post a single prompt.
-- **Maven wrapper** — `mvnw` / `mvnw.cmd` so the project builds with no system Maven installed.
-- **`README.md`** — how to start the app, send prompts via terminal / web page / REST, and shut it down.
+1. The **oldest** turns are evicted first (so the **most recent** turns are always kept verbatim).
+2. The evicted turns are folded into a running **summary** via the model, preserving goals, decisions,
+   names, numbers, and constraints while dropping verbatim detail.
+3. The summary is carried forward as `Summary of earlier conversation: …` and re-folded on each later
+   compaction, so context accumulates instead of being discarded.
 
-## REST API
+If a single prompt is itself larger than the budget, memory is cleared and the prompt is sent on its own
+as a best effort.
 
-`POST /ask`
+## Changes
 
-```json
-{ "prompt": "Name three primary colors.", "system": "Answer in one line.", "maxTokens": 64, "temperature": 0.2 }
-```
+**New:**
+- `Message` — a chat message (role + content) with a `/v1/chat/completions` wire mapping.
+- `TokenEstimator` — dependency-free local token-size estimation (`memory.chars-per-token`, ~4/char).
+- `Summarizer` (interface) + `LlmSummarizer` — fold older turns into a running summary; best-effort
+  (keeps the prior summary if the model call fails, so the invariant holds).
+- `ConversationMemory` — session state + the compaction algorithm; synchronized because the web page and
+  terminal share it.
+- `ConversationService` — assembles the budget-fitting request, calls the model, records the exchange.
 
-→ `{ "response": "Red, blue, and yellow." }`
+**Updated:**
+- `LlamaClient` — added `chat(messages, …)` for prebuilt message lists; `ask(…)` now delegates to it
+  (same wire format, existing behavior unchanged).
+- `AskController` and `TerminalPromptRunner` — now route through `ConversationService`, so both web and
+  terminal prompts use the shared memory. The system-prompt default moved into `ConversationService`.
+- `application.properties` — added `memory.max-tokens=8192`, `memory.chars-per-token=4`,
+  `memory.summary-max-tokens=1024`.
+- `README.md` — new "Conversation memory and compaction" section (what it is, an example, why compaction
+  is needed, and exactly what happens when memory is compacted), plus updated config table and layout.
 
-Only `prompt` is required; `system` falls back to the configured `roleflow.system-prompt`, and
-`temperature` is omitted from the upstream request when not supplied.
+The `/ask` request/response shape is unchanged. `LlamaServerManager` (llama-server launch behavior) is
+untouched.
 
 ## Testing
 
-`mvnw test` — **23 tests, all passing**. The suite runs fully offline: test properties set
-`llama.manage-server=false` and `roleflow.terminal.enabled=false`, so no `llama-server` process is
-launched and stdin is never read.
+`mvnw test` — **41 tests, all passing** (up from 23), fully offline.
 
-| Test class                   | Coverage                                                                       |
-|------------------------------|--------------------------------------------------------------------------------|
-| `AskControllerTest`          | Forwarding, default system-prompt fallback, blank-prompt rejection, error body |
-| `LlamaClientTest`            | Request-body shape + live round-trip against a stub HTTP server (incl. errors) |
-| `TerminalPromptRunnerTest`   | Multi-prompt loop, `exit`, blank lines, error handling, disabled mode          |
-| `LlamaServerManagerTest`     | Command construction: profiles, model path, ctx/port, extra args, draft model  |
-| `RoleFlowApplicationTests`   | Spring context wiring                                                           |
+| Test class                  | Coverage                                                                       |
+|-----------------------------|--------------------------------------------------------------------------------|
+| `ConversationMemoryTest`    | No-op when within budget; compaction evicts oldest + keeps recent; **budget invariant holds**; running summary carried forward; oversized prompt clears memory; response reserve respected |
+| `ConversationServiceTest`   | Default vs. per-call system prompt; **later prompts carry earlier turns**; blank-prompt rejection |
+| `LlmSummarizerTest`         | Transcript assembly (prior summary + messages), temperature 0, graceful fallback on model failure |
+| `TokenEstimatorTest`        | Chars-per-token estimation + per-message overhead                              |
+| `LlamaClientTest`           | Added `chat()` round-trip + empty-message guard (existing `ask`/body tests kept) |
+| `AskControllerTest` / `TerminalPromptRunnerTest` | Updated to the `ConversationService` seam                 |
+| `LlamaServerManagerTest` / `RoleFlowApplicationTests` | Unchanged behavior / full context wiring         |
 
-## How to run
+The memory tests use a fake summarizer and a deterministic token estimator, so they assert the budget
+invariant directly without a running model.
 
-```bat
-run.bat
+## Try it
+
+```
+RoleFlow> My name is Ada and I like sailing.
+Nice to meet you, Ada!
+RoleFlow> What's my name and hobby?
+Your name is Ada and you enjoy sailing.
 ```
 
-Then either type prompts at the `RoleFlow>` terminal prompt, or open `http://localhost:8080/`.
-Press **Ctrl+C** to stop (which also shuts down the managed `llama-server`).
-
-## Notes / scope
-
-- Defaults to the `small` profile (`Qwen/Qwen2.5-3B-Instruct-GGUF:Q4_K_M`); first run downloads the model.
-- Requires Java 17+ and `llama-server` on `PATH` (or `llama.binary` set).
-- No tools, web search, or storage by design — this is the minimal first pass.
+After a long conversation, older turns are paraphrased from the summary while recent turns stay exact —
+that's compaction working.

@@ -1,6 +1,5 @@
 package com.example.roleflow;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
@@ -17,16 +16,17 @@ import static org.springframework.test.util.ReflectionTestUtils.setField;
 
 class TerminalPromptRunnerTest {
 
-    private static class StubLlamaClient extends LlamaClient {
+    /** Stand-in conversation service that records prompts and can simulate failure. */
+    private static class StubConversationService extends ConversationService {
         final List<String> prompts = new ArrayList<>();
         boolean fail;
 
-        StubLlamaClient() {
-            super(new ObjectMapper());
+        StubConversationService() {
+            super(null, null, 0, "");
         }
 
         @Override
-        public String ask(String systemPrompt, String userPrompt, Integer maxTokens, Double temperature) {
+        public String reply(String systemOverride, String userPrompt, Integer maxTokens, Double temperature) {
             prompts.add(userPrompt);
             if (fail) throw new IllegalStateException("server down");
             return "echo:" + userPrompt;
@@ -41,41 +41,41 @@ class TerminalPromptRunnerTest {
 
     @Test
     void answersEachPromptUntilEndOfInput() {
-        StubLlamaClient llama = new StubLlamaClient();
-        TerminalPromptRunner runner = new TerminalPromptRunner(llama);
+        StubConversationService service = new StubConversationService();
+        TerminalPromptRunner runner = new TerminalPromptRunner(service);
 
         String output = runLoop(runner, "hello\nworld\n");
 
-        assertEquals(List.of("hello", "world"), llama.prompts);
+        assertEquals(List.of("hello", "world"), service.prompts);
         assertTrue(output.contains("echo:hello"));
         assertTrue(output.contains("echo:world"));
     }
 
     @Test
     void stopsOnExitCommand() {
-        StubLlamaClient llama = new StubLlamaClient();
-        TerminalPromptRunner runner = new TerminalPromptRunner(llama);
+        StubConversationService service = new StubConversationService();
+        TerminalPromptRunner runner = new TerminalPromptRunner(service);
 
         runLoop(runner, "first\nexit\nshould-not-run\n");
 
-        assertEquals(List.of("first"), llama.prompts);
+        assertEquals(List.of("first"), service.prompts);
     }
 
     @Test
     void skipsBlankLines() {
-        StubLlamaClient llama = new StubLlamaClient();
-        TerminalPromptRunner runner = new TerminalPromptRunner(llama);
+        StubConversationService service = new StubConversationService();
+        TerminalPromptRunner runner = new TerminalPromptRunner(service);
 
         runLoop(runner, "\n   \nreal\n");
 
-        assertEquals(List.of("real"), llama.prompts);
+        assertEquals(List.of("real"), service.prompts);
     }
 
     @Test
     void reportsErrorsWithoutCrashingTheLoop() {
-        StubLlamaClient llama = new StubLlamaClient();
-        llama.fail = true;
-        TerminalPromptRunner runner = new TerminalPromptRunner(llama);
+        StubConversationService service = new StubConversationService();
+        service.fail = true;
+        TerminalPromptRunner runner = new TerminalPromptRunner(service);
 
         String output = runLoop(runner, "boom\n");
 
@@ -83,32 +83,13 @@ class TerminalPromptRunnerTest {
     }
 
     @Test
-    void usesConfiguredSystemPrompt() {
-        StubLlamaClient llama = new StubLlamaClient() {
-            String capturedSystem;
-            @Override
-            public String ask(String systemPrompt, String userPrompt, Integer maxTokens, Double temperature) {
-                capturedSystem = systemPrompt;
-                assertEquals("Be brief", capturedSystem);
-                return super.ask(systemPrompt, userPrompt, maxTokens, temperature);
-            }
-        };
-        TerminalPromptRunner runner = new TerminalPromptRunner(llama);
-        setField(runner, "systemPrompt", "Be brief");
-
-        runLoop(runner, "hi\n");
-
-        assertEquals(List.of("hi"), llama.prompts);
-    }
-
-    @Test
     void disabledRunnerDoesNotReadStdin() {
-        StubLlamaClient llama = new StubLlamaClient();
-        TerminalPromptRunner runner = new TerminalPromptRunner(llama);
+        StubConversationService service = new StubConversationService();
+        TerminalPromptRunner runner = new TerminalPromptRunner(service);
         setField(runner, "enabled", false);
 
         runner.run();
 
-        assertTrue(llama.prompts.isEmpty());
+        assertTrue(service.prompts.isEmpty());
     }
 }

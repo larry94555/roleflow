@@ -38,20 +38,31 @@ public class LlamaClient {
     /**
      * Sends {@code userPrompt} (optionally preceded by {@code systemPrompt}) to llama-server and returns
      * the assistant reply. A null/blank system prompt is omitted; a null max-tokens/temperature falls back
-     * to the server/configured default.
+     * to the server/configured default. This is a stateless convenience over {@link #chat}.
      */
     public String ask(String systemPrompt, String userPrompt, Integer maxTokens, Double temperature)
             throws Exception {
         if (userPrompt == null || userPrompt.isBlank()) {
             throw new IllegalArgumentException("prompt is required");
         }
-        int responseTokens = maxTokens != null && maxTokens > 0 ? maxTokens : this.maxTokens;
         List<Map<String, Object>> messages = new ArrayList<>();
         if (systemPrompt != null && !systemPrompt.isBlank()) {
             messages.add(Map.of("role", "system", "content", systemPrompt));
         }
         messages.add(Map.of("role", "user", "content", userPrompt));
+        return chat(messages, maxTokens, temperature);
+    }
 
+    /**
+     * Sends a prebuilt list of chat messages to llama-server and returns the assistant reply. Used by the
+     * conversation memory, which assembles system + prior turns + the new prompt itself.
+     */
+    public String chat(List<Map<String, Object>> messages, Integer maxTokens, Double temperature)
+            throws Exception {
+        if (messages == null || messages.isEmpty()) {
+            throw new IllegalArgumentException("messages are required");
+        }
+        int responseTokens = maxTokens != null && maxTokens > 0 ? maxTokens : this.maxTokens;
         Map<String, Object> body = requestBody(model, messages, responseTokens, cachePrompt, temperature);
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create("http://" + host + ":" + port + "/v1/chat/completions"))

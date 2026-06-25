@@ -95,6 +95,30 @@ class LlamaClientTest {
     }
 
     @Test
+    void chatSendsPrebuiltMessagesAndParsesReply() throws Exception {
+        AtomicReference<JsonNode> received = new AtomicReference<>();
+        startStubServer(received, "chat reply");
+
+        LlamaClient client = clientPointingAtStub();
+        String reply = client.chat(List.of(
+                Map.of("role", "system", "content", "ctx"),
+                Map.of("role", "user", "content", "hi")), 50, null);
+
+        assertEquals("chat reply", reply);
+        JsonNode messages = received.get().path("messages");
+        assertEquals(2, messages.size());
+        assertEquals("system", messages.get(0).path("role").asText());
+        assertEquals(50, received.get().path("max_tokens").asInt());
+    }
+
+    @Test
+    void chatRejectsEmptyMessageList() {
+        LlamaClient client = new LlamaClient(mapper);
+
+        assertThrows(IllegalArgumentException.class, () -> client.chat(List.of(), null, null));
+    }
+
+    @Test
     void askThrowsOnNonSuccessStatus() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/v1/chat/completions", exchange -> {

@@ -17,13 +17,12 @@ import java.nio.charset.StandardCharsets;
  */
 @Component
 public class TerminalPromptRunner implements CommandLineRunner {
-    private final LlamaClient llama;
+    private final ConversationService conversation;
 
     @Value("${roleflow.terminal.enabled:true}") private boolean enabled = true;
-    @Value("${roleflow.system-prompt:}") private String systemPrompt = "";
 
-    public TerminalPromptRunner(LlamaClient llama) {
-        this.llama = llama;
+    public TerminalPromptRunner(ConversationService conversation) {
+        this.conversation = conversation;
     }
 
     @Override
@@ -53,7 +52,7 @@ public class TerminalPromptRunner implements CommandLineRunner {
                 }
                 if (!prompt.isEmpty()) {
                     try {
-                        out.println(llama.ask(systemPrompt, prompt, null, null));
+                        out.println(conversation.reply(null, prompt, null, null));
                     } catch (Exception e) {
                         out.println("[error] " + e.getMessage());
                     }
