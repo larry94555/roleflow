@@ -3,3 +3,6 @@ target/
 llama-server.log
 .idea/
 *.iml
+
+# Generated goal/plan artifacts (keep the directory, ignore its contents).
+goals/*.md

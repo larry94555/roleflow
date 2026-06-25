@@ -12,12 +12,19 @@ Both share a single **conversation memory**, so each prompt has the context of t
 that memory grows too large to fit the model's context window, it is **compacted** automatically (the way
 Claude Code auto-compacts a long session) — see [Conversation memory](#conversation-memory-and-compaction).
 
+Every prompt is processed by a **role workflow** defined in [`config/roleflow.active`](config/roleflow.active):
+the prompt is classified, requests are clarified, and a **goal file** and **plan file** are produced for
+real requests. This means a single prompt usually results in **several** calls to `llama-server` — one per
+role. See [Role workflow](#role-workflow) below and [CURRENT_PROCESS.md](CURRENT_PROCESS.md) for the full
+flow.
+
 The application does exactly these things and nothing more:
 
 - starts and supervises `llama-server` (same launch behavior as goalmaker),
 - accepts prompts typed at the terminal,
 - serves a simple web page that submits prompts and shows the response,
-- remembers the conversation and compacts it when it gets too big.
+- remembers the conversation and compacts it when it gets too big,
+- drives each prompt through the role workflow in `roleflow.active`.
 
 ---
 
@@ -177,6 +184,57 @@ even after a long conversation, while older wording is paraphrased rather than q
 
 ---
 
+## Role workflow
+
+Instead of answering each prompt with a single model call, RoleFlow drives the prompt through a sequence
+of **roles** defined in [`config/roleflow.active`](config/roleflow.active). Each role is a system prompt
+that wraps the (unchanging) user prompt so the model performs one job, then a **transition** decides which
+role runs next. The same workflow is used for both terminal and web prompts.
+
+The shipped workflow has six roles:
+
+1. **SignalOrRequest** — classify the prompt as a *signal* (e.g. "Hello", "Thanks") or a *request*.
+2. **SignalResponse** — for a signal: acknowledge or reply. *(ends here — no files)*
+3. **HandleRequest** — for a request: make the success criteria clear, asking clarifying questions if
+   needed (and pausing for your answer), or noting a cancellation.
+4. **GoalBuilder** — write the **goal** (the criteria for success) to a file in `goals/`.
+5. **PlanBuilder** — write a four-phase **plan** (Preparation, Action, Verification, Next steps) to a
+   file in `goals/`.
+6. **ResponseBuilder** — tell you the goal and plan were created and where the files are.
+
+So a single prompt produces **multiple `llama-server` calls — at least one per role.** A signal takes two
+calls and writes nothing; a request runs through all the roles and writes a **goal file** and a **plan
+file**. If a request is ambiguous, the Clarifier asks a question and waits; your next prompt answers it
+and the flow resumes. Because every role call goes through the shared conversation memory, clarifying
+questions and answers accumulate as context without disrupting the flow.
+
+### Example (terminal)
+
+```
+RoleFlow> thanks!
+You're welcome!                                  <-- signal: 2 calls, no files
+
+RoleFlow> Set up a weekly backup of my notes folder
+To make sure I get this right: should the backup run every week indefinitely,
+and where should the copies be stored?           <-- request needed clarification (paused)
+RoleFlow> Yes, weekly forever, store them on my external drive
+Your request has been turned into a goal and a plan.
+Goal file:  goals/goal-20260625-101500-9f3a.md
+Plan file:  goals/plan-20260625-101500-9f3a.md   <-- request: goal + plan written
+```
+
+The goal and plan files share a run id so you can tell they belong to the same request.
+
+For the complete flow — the JSON protocol each role uses, the exact transition rules, and a diagram — see
+**[CURRENT_PROCESS.md](CURRENT_PROCESS.md)**.
+
+### Turning the workflow off
+
+If `config/roleflow.active` is removed or empty (or `roleflow.config` points nowhere), RoleFlow falls back
+to **plain single-call mode**: each prompt is answered with one model call and no files are written.
+
+---
+
 ## How to end the application
 
 - Press **Ctrl+C** in the terminal where the application is running. Spring Boot shuts down and stops the
@@ -197,8 +255,11 @@ and can be overridden on the command line, e.g. `--server.port=9000`. The most u
 | Property                  | Default                | Description                                              |
 |---------------------------|------------------------|----------------------------------------------------------|
 | `server.port`             | `8080`                 | Port for the web page and REST API.                      |
-| `roleflow.system-prompt`  | *(empty)*              | Default system prompt for terminal/REST calls.           |
+| `roleflow.system-prompt`  | *(empty)*              | Default system prompt (plain mode only, when no workflow loaded). |
 | `roleflow.terminal.enabled` | `true`               | Read prompts from stdin. Set `false` to disable.         |
+| `roleflow.config`         | `config/roleflow.active` | Workflow file. Empty/missing → plain single-call mode.  |
+| `roleflow.goals-dir`      | `goals`                | Directory where goal and plan files are written.         |
+| `roleflow.max-steps`      | `20`                   | Safety cap on role steps processed per prompt.           |
 | `prompt.max-tokens`       | `1024`                 | Default response length cap (also the response reserve). |
 | `memory.max-tokens`       | `8192`                 | `MAX_TOKEN_SIZE` — memory compacts to stay under this.   |
 | `memory.chars-per-token`  | `4`                    | Chars-per-token ratio used to estimate sizes locally.    |
@@ -234,15 +295,26 @@ src/main/java/com/example/roleflow/
   LlamaClient.java             Calls llama-server's /v1/chat/completions (ask + chat)
   AskController.java           POST /ask REST endpoint
   TerminalPromptRunner.java    Reads prompts from the terminal (stdin)
-  ConversationService.java     Runs a prompt against the session memory
+  ConversationService.java     Runs a prompt: drives the workflow or a single call
   ConversationMemory.java      Session memory + Claude Code-style compaction
   Summarizer.java              Interface for folding old turns into a summary
   LlmSummarizer.java           Default summarizer, backed by the model
   TokenEstimator.java          Local token-size estimation
   Message.java                 A chat message (role + content)
+  RoleFlowConfig.java          Loads/parses config/roleflow.active into roles
+  Role.java                    One workflow step (action + transitions)
+  RoleFlowReply.java           Parses the model's {message,decision,artifact} JSON
+  RoleFlowSession.java         Per-session flow state (current role, run id, artifacts)
+  RoleFlowEngine.java          Drives a prompt through the roles
+  GoalFileWriter.java          Writes goal/plan files into goals/
 src/main/resources/
   application.properties       Configuration
   static/index.html            The web page
+config/
+  roleflow.active              The role workflow the engine runs
+  roleflow.proposed            The human-authored source for the workflow
+goals/                         Goal and plan files written for requests
 src/test/java/com/example/roleflow/
   ...Test.java                 Unit and context tests
+CURRENT_PROCESS.md             Detailed explanation of the role workflow
 ```

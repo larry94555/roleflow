@@ -37,6 +37,18 @@ class RoleFlowApplicationTests {
     @Autowired
     private Summarizer summarizer;
 
+    @Autowired
+    private RoleFlowConfig roleFlowConfig;
+
+    @Autowired
+    private RoleFlowEngine roleFlowEngine;
+
+    @Autowired
+    private RoleFlowSession roleFlowSession;
+
+    @Autowired
+    private GoalFileWriter goalFileWriter;
+
     @Test
     void contextLoads() {
         assertNotNull(askController);
@@ -47,5 +59,9 @@ class RoleFlowApplicationTests {
         assertNotNull(conversationMemory);
         assertNotNull(tokenEstimator);
         assertNotNull(summarizer);
+        assertNotNull(roleFlowConfig);
+        assertNotNull(roleFlowEngine);
+        assertNotNull(roleFlowSession);
+        assertNotNull(goalFileWriter);
     }
 }
