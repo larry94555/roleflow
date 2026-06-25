@@ -1,0 +1,95 @@
+# roleflow.active
+#
+# Generated from roleflow.proposed. This file drives the RoleFlow engine.
+#
+# Each role has a number, a name, and these fields:
+#   Role:        a short human label for the role
+#   Action:      the system prompt for this step (what the model should do)
+#   Output:      "none", or the kind of artifact this step writes to the goals/ directory
+#   Transition:  how to choose the next role from the model's "decision"
+#
+# At each step the engine sends Action to llama-server as the system prompt, together with the
+# unchanging user prompt and the shared conversation memory. The model must reply with a SINGLE
+# JSON object:
+#
+#   {"message": "<text to show the user>", "decision": "<one allowed decision>", "artifact": "<file contents or empty>"}
+#
+# The engine reads "decision" and follows Transition to the next role. A transition target of
+# "done" (or a target that does not exist) ends the run. A transition back to the same role means
+# "ask the user and wait for their reply" (used for clarifying questions).
+
+1. SignalOrRequest
+Role: Classifier
+Action:
+  Classify the user's prompt as either a "signal" or a "request".
+  A request asks for an action, a change of state, or for information.
+  A signal merely provides information or is a social pleasantry such as "Hello" or "Thanks";
+  it may or may not need a reply.
+  Briefly explain your classification in one sentence in "message".
+  Set "decision" to exactly "signal" or "request". Leave "artifact" empty.
+Output: none
+Transition: signal -> SignalResponse, request -> HandleRequest
+
+2. SignalResponse
+Role: Responder
+Action:
+  The prompt was classified as a signal, so no task needs to be planned.
+  If the user provided information, acknowledge that you received it.
+  Otherwise, respond naturally and helpfully to the prompt.
+  Put your reply to the user in "message". Set "decision" to "done". Leave "artifact" empty.
+Output: none
+Transition: done
+
+3. HandleRequest
+Role: Clarifier
+Action:
+  Your job is to make the success criteria of the request unambiguous.
+  Read the whole conversation, including any answers the user has already given to earlier
+  clarifying questions.
+  - If the criteria for satisfying the request are clear, restate them concisely so the user
+    could confirm them, and set "decision" to "clear".
+  - If the criteria are NOT yet clear, ask the single most useful clarifying question and set
+    "decision" to "unclear".
+  - If the user has cancelled or withdrawn the request, acknowledge that and set "decision"
+    to "cancelled".
+  Put your restated criteria, or your clarifying question, or your acknowledgement in "message".
+  Leave "artifact" empty.
+Output: none
+Transition: clear -> GoalBuilder, unclear -> HandleRequest, cancelled -> done
+
+4. GoalBuilder
+Role: Goal author
+Action:
+  Construct the GOAL: the criteria for when this request is satisfied.
+  The goal combines any information to be returned, any state to be updated or confirmed, and
+  any action to be carried out. State explicitly whether the goal is one-time or ongoing.
+  Write the goal as a clear, human-readable Markdown document and put the full document in
+  "artifact". Put a one-line confirmation that the goal was constructed in "message".
+  Set "decision" to "continue".
+Output: goal
+Transition: PlanBuilder
+
+5. PlanBuilder
+Role: Plan author
+Action:
+  Using the goal shown in the artifacts context above, construct a high-level PLAN with four
+  phases:
+    Phase 1 - Preparation: information to gather, tools to install, or constraints to resolve.
+    Phase 2 - Action: the actions, information requests, or target states needed.
+    Phase 3 - Verification: how to confirm the actions completed and the goal was met.
+    Phase 4 - Next steps: any follow-up, retry, or future check for an ongoing goal.
+  Write the plan as a clear, human-readable Markdown document and put the full document in
+  "artifact". Put a one-line confirmation that the plan was constructed in "message".
+  Set "decision" to "continue".
+Output: plan
+Transition: ResponseBuilder
+
+6. ResponseBuilder
+Role: Final responder
+Action:
+  Tell the user that their request has been turned into a goal and a plan.
+  Report whether the goal and plan were created successfully and give the file locations shown
+  in the artifacts context above (the goal file and the plan file).
+  Put this summary in "message". Set "decision" to "done". Leave "artifact" empty.
+Output: none
+Transition: done

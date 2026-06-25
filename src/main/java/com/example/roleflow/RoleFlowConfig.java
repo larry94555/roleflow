@@ -1,0 +1,163 @@
+package com.example.roleflow;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * Loads and holds the workflow defined in {@code roleflow.active}. The file lists roles, each a number
+ * and a name followed by {@code Role}, {@code Action}, {@code Output}, and {@code Transition} fields.
+ * When no roles are loaded (file missing or empty), {@link #isActive()} is false and the application
+ * falls back to plain single-call behavior.
+ */
+@Component
+public class RoleFlowConfig {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(RoleFlowConfig.class);
+
+    private static final Pattern ROLE_HEADER = Pattern.compile("^\\s*(\\d+)\\.\\s+([A-Za-z][\\w-]*)\\s*$");
+    private static final Pattern FIELD_HEADER =
+            Pattern.compile("^\\s*(Role|Action|Output|Transition)\\s*:(.*)$");
+
+    private final List<Role> roles;
+    private final Map<String, Role> byName;
+
+    @Autowired
+    public RoleFlowConfig(@Value("${roleflow.config:config/roleflow.active}") String configPath) {
+        this(load(configPath));
+    }
+
+    RoleFlowConfig(List<Role> roles) {
+        this.roles = List.copyOf(roles);
+        Map<String, Role> index = new LinkedHashMap<>();
+        for (Role role : roles) {
+            index.put(role.name().toLowerCase(Locale.ROOT), role);
+        }
+        this.byName = index;
+    }
+
+    private static List<Role> load(String configPath) {
+        Path path = Path.of(configPath);
+        if (!Files.isRegularFile(path)) {
+            log.warn("[roleflow] no active config at {}; running in plain single-call mode", path.toAbsolutePath());
+            return List.of();
+        }
+        try {
+            List<Role> parsed = parse(Files.readString(path));
+            log.info("[roleflow] loaded {} roles from {}", parsed.size(), path);
+            return parsed;
+        } catch (Exception e) {
+            log.warn("[roleflow] failed to read {}: {}", path, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** Parses the {@code roleflow.active} text into ordered roles. */
+    public static List<Role> parse(String text) {
+        List<Role> result = new ArrayList<>();
+        String[] lines = text.split("\\R");
+
+        Integer number = null;
+        String name = null;
+        String field = null;
+        Map<String, StringBuilder> fields = new LinkedHashMap<>();
+
+        for (String line : lines) {
+            Matcher header = ROLE_HEADER.matcher(line);
+            if (header.matches()) {
+                flush(result, number, name, fields);
+                number = Integer.parseInt(header.group(1));
+                name = header.group(2);
+                field = null;
+                fields = new LinkedHashMap<>();
+                continue;
+            }
+            if (number == null) {
+                continue; // preamble / comments before the first role
+            }
+            if (line.stripLeading().startsWith("#")) {
+                continue;
+            }
+            Matcher fieldHeader = FIELD_HEADER.matcher(line);
+            if (fieldHeader.matches()) {
+                field = fieldHeader.group(1).toLowerCase(Locale.ROOT);
+                fields.put(field, new StringBuilder(fieldHeader.group(2).trim()));
+            } else if (field != null) {
+                fields.get(field).append('\n').append(line);
+            }
+        }
+        flush(result, number, name, fields);
+        return result;
+    }
+
+    private static void flush(List<Role> result, Integer number, String name,
+                              Map<String, StringBuilder> fields) {
+        if (number == null || name == null) return;
+        String title = dedent(value(fields, "role"));
+        String action = dedent(value(fields, "action"));
+        String output = value(fields, "output").trim();
+        if (output.isBlank() || "none".equalsIgnoreCase(output)) output = null;
+        List<Role.Transition> transitions = parseTransitions(value(fields, "transition"));
+        result.add(new Role(number, name, title, action, output, transitions));
+    }
+
+    private static List<Role.Transition> parseTransitions(String text) {
+        List<Role.Transition> transitions = new ArrayList<>();
+        for (String part : text.split("[,;\\n]")) {
+            String rule = part.trim();
+            if (rule.isEmpty()) continue;
+            int arrow = rule.indexOf("->");
+            if (arrow >= 0) {
+                String label = rule.substring(0, arrow).trim();
+                String target = rule.substring(arrow + 2).trim();
+                transitions.add(new Role.Transition(label.isEmpty() ? null : label, target));
+            } else {
+                // No label: an unconditional transition (e.g. "done" or a bare role name).
+                transitions.add(new Role.Transition(null, rule));
+            }
+        }
+        return transitions;
+    }
+
+    private static String value(Map<String, StringBuilder> fields, String key) {
+        StringBuilder builder = fields.get(key);
+        return builder == null ? "" : builder.toString();
+    }
+
+    /** Trims surrounding blank lines and strips common leading whitespace from each line. */
+    private static String dedent(String text) {
+        String[] lines = text.split("\n");
+        StringBuilder out = new StringBuilder();
+        for (String line : lines) {
+            String trimmed = line.strip();
+            if (out.length() == 0 && trimmed.isEmpty()) continue; // skip leading blanks
+            out.append(trimmed).append('\n');
+        }
+        return out.toString().strip();
+    }
+
+    public boolean isActive() {
+        return !roles.isEmpty();
+    }
+
+    public List<Role> roles() {
+        return roles;
+    }
+
+    public Role firstRole() {
+        return roles.isEmpty() ? null : roles.get(0);
+    }
+
+    public Role byName(String roleName) {
+        return roleName == null ? null : byName.get(roleName.toLowerCase(Locale.ROOT));
+    }
+}

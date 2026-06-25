@@ -1,0 +1,53 @@
+1. SignalOrRequest
+
+Role:  Classifier
+
+Action:  Evaluates prompt to determine whether it is a signal or a request.  A request asks for an action, a change in state, or information.  A signal provides information and may nor may not require a response. Statements such as "Hello", "Thanks", etc. would count as a signal.
+
+
+Transition:  If "signal", then go to SigalResponse.  If "request", then go to HandleRequest
+
+2.  SignalResponse
+
+Role:  Generate response
+
+Action:  If information provided, acknowledge that the information was received.  If no information provided, then response to the prompt accordingly.
+
+Transition:  None
+
+3.  HandleRequest
+
+Role:  Clarifier
+
+Action:  If the criteria for satisfying the request is clear, then state the criteria in a way that gives the user an opportunity to confirm or to update. Ideally, there could ba checkbox that says "yes" or "not exactly". If the criteria for satisfying the request is not clear, then ask clariying questions so that criteria becomes clear.  Check for the case where the user has cancelled the request.  If the user has cancelled the request, response appropriately. 
+
+Transition:  If criteria is clear, then go to GoalBuilder.  If the criteria is not clear, contiues to ask clarifying questions.  If the user has cancelled the request, then done.
+
+4.  GoalBuilder
+
+Role:  Consruct Goal
+
+Action:  The goal is a separate artifact.  It is the criteria for when the request is satisfied. A criteria should be a combination of information returned, a state either updated or confirmed, or an action carried out.  It should also state whether the goal is implemented in a singular manner or an ongoing manner.  
+
+Output:  A goal file should be created that captures the detail in the action in a human readable form
+
+Transition:  After the goal has been constructed, go to PlanBuilder
+
+5.  PlanBuilder
+
+Role:  Construct a plan
+
+Action:  Buld a set of high level steps that will satisfy the goal.  Each step is a subgoal that in conjunction will satisfy the goal.  There are four phases of steps.  Phase 1:  Preparation steps.  Is any preparation needed such as information gathering or tool installing or working through constraints.  These high level steps would be called out in Phase 1.  Phase 2:  Action steps.  What actions are needed for this plan.  These can include requests for information, actions needed, or goal states sought.  Phase 3:  Verification steps.  Did the action complete successfully?  What is the current state?  Was the goal achieved?  Phase 4:  Next steps.  Is a future action required? If the goal failed, is a retry or additional action needed? Is another check needed at a future time as part of an ongoing activity?
+
+Output:  A plan file should be created that captures the high level steps of the 4 phases in a human readable form.
+
+Transition: After the high level plan is done, go to the ResponseBuilder
+
+6.  ResponseBuilder
+
+Role:  Response to user
+
+Action:  Respond to the user on the success or failure of the creation of the plan, the location of the goal file, the location of the plan file.
+
+Transition: Done
+

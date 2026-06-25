@@ -22,7 +22,7 @@ class TerminalPromptRunnerTest {
         boolean fail;
 
         StubConversationService() {
-            super(null, null, 0, "");
+            super(null, null, null, null, 0, "");
         }
 
         @Override

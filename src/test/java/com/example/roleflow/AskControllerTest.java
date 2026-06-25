@@ -18,7 +18,7 @@ class AskControllerTest {
         String reply = "model reply";
 
         RecordingConversationService() {
-            super(null, null, 0, "");
+            super(null, null, null, null, 0, "");
         }
 
         @Override
