@@ -55,6 +55,9 @@ class RoleFlowApplicationTests {
     @Autowired
     private AuditController auditController;
 
+    @Autowired
+    private GoalFileController goalFileController;
+
     @Test
     void contextLoads() {
         assertNotNull(askController);
@@ -71,5 +74,6 @@ class RoleFlowApplicationTests {
         assertNotNull(goalFileWriter);
         assertNotNull(auditService);
         assertNotNull(auditController);
+        assertNotNull(goalFileController);
     }
 }

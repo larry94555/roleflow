@@ -10,7 +10,7 @@
             font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
             max-width: 760px;
             margin: 2rem auto;
-            padding: 0 1rem;
+            padding: 0 1rem 4rem;
             line-height: 1.5;
         }
         h1 { margin-bottom: 0.25rem; }
@@ -24,6 +24,7 @@
             border-radius: 6px;
             border: 1px solid #8884;
         }
+        textarea[readonly] { opacity: 0.7; cursor: default; }
         button {
             margin-top: 1rem;
             padding: 0.6rem 1.2rem;
@@ -36,85 +37,176 @@
             cursor: pointer;
         }
         button:disabled { opacity: 0.5; cursor: progress; }
-        #response {
+
+        /* Transcript of past turns (read-only). */
+        #transcript { margin-top: 1rem; }
+        .turn { margin: 1rem 0; }
+        .bubble {
             white-space: pre-wrap;
-            margin-top: 1.5rem;
-            padding: 1rem;
-            border-radius: 6px;
-            background: #8881;
-            min-height: 2.5rem;
+            word-wrap: break-word;
+            padding: 0.6rem 0.85rem;
+            border-radius: 8px;
+            margin: 0.4rem 0;
         }
-        .error { color: #dc2626; }
-        #auditLink { margin-top: 0.75rem; font-size: 0.9rem; display: none; }
-        #auditLink a { color: #2563eb; }
+        .bubble .who {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            opacity: 0.6;
+            margin-bottom: 0.2rem;
+        }
+        .bubble.user { background: #2563eb22; border: 1px solid #2563eb55; }
+        .bubble.assistant { background: #8881; border: 1px solid #8883; }
+        .bubble.assistant.error { color: #dc2626; }
+        .bubble a { color: #2563eb; }
+        .turn-audit { font-size: 0.8rem; margin-top: 0.3rem; }
+        .turn-audit a { color: #2563eb; }
+
+        /* The active input area, always at the bottom of the page. */
+        #composer { margin-top: 1.5rem; }
+        .hint { font-size: 0.8rem; opacity: 0.6; margin-top: 0.4rem; }
+        .error-text { color: #dc2626; margin-top: 0.5rem; }
     </style>
 </head>
 <body>
     <h1>RoleFlow</h1>
-    <p class="subtitle">Send a prompt to the local llama-server.</p>
+    <p class="subtitle">Send a prompt to the local llama-server. Replies stay in the conversation below.</p>
 
     <label for="system">System prompt (optional)</label>
     <textarea id="system" rows="2" placeholder="You are a helpful assistant."></textarea>
 
-    <label for="prompt">Prompt</label>
-    <textarea id="prompt" rows="5" placeholder="Ask me anything..."></textarea>
+    <div id="transcript"></div>
 
-    <button id="send">Send</button>
-
-    <div id="auditLink">🔎 <a id="auditAnchor" href="#" target="_blank" rel="noopener">View audit trail for this prompt ↗</a> (opens in a new tab; updates live)</div>
-
-    <div id="response" aria-live="polite"></div>
+    <div id="composer">
+        <label id="composerLabel" for="prompt">Prompt</label>
+        <textarea id="prompt" rows="5" placeholder="Ask me anything..."></textarea>
+        <button id="send">Send</button>
+        <div id="composerError" class="error-text" style="display:none;"></div>
+        <div class="hint">Press Ctrl/⌘ + Enter to send. Earlier prompts above are read-only; scroll up to review them.</div>
+    </div>
 
     <script>
-        const sendButton = document.getElementById("send");
-        const promptBox = document.getElementById("prompt");
         const systemBox = document.getElementById("system");
-        const responseBox = document.getElementById("response");
-        const auditLink = document.getElementById("auditLink");
-        const auditAnchor = document.getElementById("auditAnchor");
+        const transcript = document.getElementById("transcript");
+        const composer = document.getElementById("composer");
+        const composerLabel = document.getElementById("composerLabel");
+        const promptBox = document.getElementById("prompt");
+        const sendButton = document.getElementById("send");
+        const composerError = document.getElementById("composerError");
+
+        let auditOpened = false;
 
         function newId() {
             return (crypto.randomUUID && crypto.randomUUID()) ||
                 ("p-" + Date.now() + "-" + Math.random().toString(16).slice(2));
         }
 
+        function escapeHtml(s) {
+            return (s ?? "").replace(/[&<>"]/g,
+                c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[c]));
+        }
+
+        // Escape the response, then turn goal/plan file:// links into clickable links served over http
+        // (a raw file:// link cannot be opened from this page). Only the validated .md file name is used.
+        function renderResponseHtml(text) {
+            return escapeHtml(text).replace(
+                /file:\/\/\S+?\/([A-Za-z0-9._-]+\.md)/g,
+                (match, name) => `<a href="/goals/${name}" target="_blank" rel="noopener">${match}</a>`);
+        }
+
+        // Append a turn (the user's prompt + a placeholder for the reply) and return refs to fill in.
+        function appendTurn(promptText, auditId) {
+            const turn = document.createElement("div");
+            turn.className = "turn";
+
+            const user = document.createElement("div");
+            user.className = "bubble user";
+            user.innerHTML = `<div class="who">You</div>`;
+            const userText = document.createElement("div");
+            userText.textContent = promptText;
+            user.appendChild(userText);
+
+            const assistant = document.createElement("div");
+            assistant.className = "bubble assistant";
+            assistant.innerHTML = `<div class="who">RoleFlow</div>`;
+            const assistantText = document.createElement("div");
+            assistantText.textContent = "Thinking…";
+            assistant.appendChild(assistantText);
+
+            const audit = document.createElement("div");
+            audit.className = "turn-audit";
+            audit.innerHTML = `<a href="audit.html?prompt=${encodeURIComponent(auditId)}" ` +
+                `target="_blank" rel="noopener">🔎 View audit trail for this step ↗</a>`;
+            assistant.appendChild(audit);
+
+            turn.appendChild(user);
+            turn.appendChild(assistant);
+            transcript.appendChild(turn);
+            return { assistant, assistantText };
+        }
+
+        function setBusy(busy) {
+            promptBox.readOnly = busy;
+            sendButton.disabled = busy;
+        }
+
+        function scrollToComposer() {
+            composer.scrollIntoView({ behavior: "smooth", block: "end" });
+        }
+
         async function send() {
-            const prompt = promptBox.value.trim();
-            if (!prompt) {
-                responseBox.textContent = "Please enter a prompt.";
-                responseBox.classList.add("error");
+            const text = promptBox.value.trim();
+            composerError.style.display = "none";
+            if (!text) {
+                composerError.textContent = "Please enter a prompt.";
+                composerError.style.display = "block";
                 return;
             }
 
-            // Create the audit id up front so the audit link is available immediately, and open the
-            // audit page so it can be watched live while the prompt is processed.
-            const auditId = newId();
-            const auditUrl = "audit.html?prompt=" + encodeURIComponent(auditId);
-            auditAnchor.href = auditUrl;
-            auditLink.style.display = "block";
-            window.open(auditUrl, "_blank", "noopener");
+            const isFirst = transcript.children.length === 0;
+            // The system prompt applies to the session, so send it once and then lock it.
+            const system = isFirst ? (systemBox.value.trim() || null) : null;
+            if (isFirst) {
+                systemBox.readOnly = true;
+            }
 
-            responseBox.classList.remove("error");
-            responseBox.textContent = "Thinking…";
-            sendButton.disabled = true;
+            const auditId = newId();
+            const turn = appendTurn(text, auditId);
+
+            // Open the audit page once so the run can be watched live; later steps reuse the same run.
+            if (!auditOpened) {
+                window.open("audit.html?prompt=" + encodeURIComponent(auditId), "_blank", "noopener");
+                auditOpened = true;
+            }
+
+            // Clear the composer for the next reply and mark it busy while the model works.
+            promptBox.value = "";
+            setBusy(true);
+            scrollToComposer();
+
             try {
                 const res = await fetch("/ask", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ prompt, system: systemBox.value.trim() || null, auditId })
+                    body: JSON.stringify({ prompt: text, system, auditId })
                 });
                 const data = await res.json();
                 if (!res.ok || data.error) {
-                    responseBox.textContent = data.error || ("Request failed: " + res.status);
-                    responseBox.classList.add("error");
+                    turn.assistantText.textContent = data.error || ("Request failed: " + res.status);
+                    turn.assistant.classList.add("error");
                 } else {
-                    responseBox.textContent = data.response;
+                    turn.assistantText.innerHTML = renderResponseHtml(data.response);
                 }
             } catch (e) {
-                responseBox.textContent = "Network error: " + e.message;
-                responseBox.classList.add("error");
+                turn.assistantText.textContent = "Network error: " + e.message;
+                turn.assistant.classList.add("error");
             } finally {
-                sendButton.disabled = false;
+                setBusy(false);
+                // After the first turn the input is for replies (e.g. answering a clarifying question).
+                composerLabel.textContent = "Your reply";
+                promptBox.placeholder = "Type your reply…";
+                promptBox.focus();
+                scrollToComposer();
             }
         }
 
