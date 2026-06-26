@@ -71,6 +71,7 @@ class RoleFlowEngineTest {
     private RoleFlowConfig config;
     private RoleFlowSession session;
     private GoalFileWriter writer;
+    private SessionLabeler labeler;
     private AuditService audit;
     private RoleFlowEngine engine;
 
@@ -79,8 +80,9 @@ class RoleFlowEngineTest {
         config = new RoleFlowConfig(RoleFlowConfig.parse(Files.readString(Path.of("config/roleflow.active"))));
         session = new RoleFlowSession();
         writer = new GoalFileWriter(goalsDir);
+        labeler = new SessionLabeler(goalsDir.toString());
         audit = new AuditService(50);
-        engine = new RoleFlowEngine(config, session, writer, audit, new ObjectMapper(), 20);
+        engine = new RoleFlowEngine(config, session, writer, labeler, audit, new ObjectMapper(), 20);
         this.goalsDir = goalsDir;
     }
 
@@ -123,9 +125,12 @@ class RoleFlowEngineTest {
         assertTrue(result.contains("Files created:"), result);
         assertTrue(result.contains("Goal file: file:"), "the goal file URL should be reported");
         assertTrue(result.contains("Plan file: file:"), "the plan file URL should be reported");
-        assertTrue(result.contains("goal-") && result.contains("plan-"));
+        assertTrue(result.contains("goal_") && result.contains("plan_"));
         // The file *contents* must not be pasted into the response (the bug this fixes).
         assertFalse(result.contains("Deliver a report"), "must report locations, not file contents");
+        // The file names carry a human-readable prefix derived from the initial prompt.
+        assertTrue(findFile("goal_build-report").getFileName().toString().startsWith("goal_build-report"),
+                "goal file name should include the prompt-derived prefix");
 
         assertEquals(List.of("SignalOrRequest", "HandleRequest", "GoalBuilder",
                 "PlanBuilder", "ResponseBuilder"), model.rolesInvoked);
@@ -134,9 +139,9 @@ class RoleFlowEngineTest {
         assertTrue(session.isIdle());
 
         assertEquals(2, fileCount(), "a request should create exactly a goal file and a plan file");
-        assertTrue(Files.exists(findFile("goal-")), "goal file should exist");
-        assertTrue(Files.exists(findFile("plan-")), "plan file should exist");
-        assertEquals("# Goal\nDeliver a report", Files.readString(findFile("goal-")));
+        assertTrue(Files.exists(findFile("goal_")), "goal file should exist");
+        assertTrue(Files.exists(findFile("plan_")), "plan file should exist");
+        assertEquals("# Goal\nDeliver a report", Files.readString(findFile("goal_")));
     }
 
     @Test
@@ -151,8 +156,8 @@ class RoleFlowEngineTest {
 
         String result = engine.run("Build me a report", null, null, null, model, null, "test");
 
-        assertTrue(Files.exists(findFile("plan-")), "the plan file should be written from the message");
-        assertEquals("# Plan\nPhase 1: prepare", Files.readString(findFile("plan-")));
+        assertTrue(Files.exists(findFile("plan_")), "the plan file should be written from the message");
+        assertEquals("# Plan\nPhase 1: prepare", Files.readString(findFile("plan_")));
         // Both files are reported in the completed run.
         assertTrue(result.contains("Goal file: file:") && result.contains("Plan file: file:"), result);
     }
@@ -160,7 +165,7 @@ class RoleFlowEngineTest {
     @Test
     void reportingRoleSeesFileLocationsButNotContents() throws Exception {
         // GoalBuilder (an output role) is given prior content; ResponseBuilder (a reporting role) is not.
-        session.begin("GoalBuilder");
+        session.begin("GoalBuilder", "build-report_20260101-000000");
         session.addArtifact("goal", "SECRET GOAL BODY", "file:///tmp/goal-1.md");
 
         String reportingPrompt = engine.buildSystemPrompt(config.byName("ResponseBuilder"), null);
@@ -217,7 +222,7 @@ class RoleFlowEngineTest {
         RoleFlowConfig tiny = new RoleFlowConfig(RoleFlowConfig.parse(
                 "1. Start\nRole: x\nAction: do it\nTransition: go -> Ghost\n"));
         RoleFlowEngine tinyEngine = new RoleFlowEngine(
-                tiny, session, writer, audit, new ObjectMapper(), 20);
+                tiny, session, writer, labeler, audit, new ObjectMapper(), 20);
         ScriptedModel model = new ScriptedModel().on("Start", json("go", "went nowhere"));
 
         String result = tinyEngine.run("hi", null, null, null, model, null, "test");

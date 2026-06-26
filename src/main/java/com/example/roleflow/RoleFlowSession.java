@@ -2,11 +2,8 @@ package com.example.roleflow;
 
 import org.springframework.stereotype.Component;
 
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Tracks where the workflow is for the current session: which role to (re)enter next, the id shared by
@@ -19,8 +16,6 @@ import java.util.concurrent.ThreadLocalRandom;
 @Component
 public class RoleFlowSession {
 
-    private static final DateTimeFormatter RUN_ID_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
-
     private String currentRole;
     private String runId;
     private final Map<String, String> artifactContents = new LinkedHashMap<>();
@@ -31,11 +26,10 @@ public class RoleFlowSession {
         return currentRole == null;
     }
 
-    /** Starts a new run at the given role with a fresh run id and no artifacts. */
-    public void begin(String firstRole) {
-        currentRole = firstRole;
-        runId = LocalDateTime.now().format(RUN_ID_FORMAT) + "-"
-                + Integer.toHexString(ThreadLocalRandom.current().nextInt(0x1000, 0x10000));
+    /** Starts a new run at the given role with the supplied run id and no artifacts. */
+    public void begin(String firstRole, String runId) {
+        this.currentRole = firstRole;
+        this.runId = runId;
         artifactContents.clear();
         artifactPaths.clear();
     }

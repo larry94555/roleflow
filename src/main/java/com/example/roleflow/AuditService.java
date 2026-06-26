@@ -36,6 +36,7 @@ public class AuditService {
     /** In-memory trail for one run. */
     private static final class Trail {
         final String runId;
+        final String prefix;
         final String source;
         final Instant createdAt = Instant.now();
         final List<AuditEvent> events = Collections.synchronizedList(new ArrayList<>());
@@ -44,6 +45,7 @@ public class AuditService {
 
         Trail(String runId, String source) {
             this.runId = runId;
+            this.prefix = SessionLabeler.prefixOf(runId);
             this.source = source;
         }
     }
@@ -125,7 +127,9 @@ public class AuditService {
         String runId = runByPrompt.get(promptId);
         if (runId == null) return AuditView.pending(promptId);
         AuditView view = viewByRun(runId);
-        return new AuditView(promptId, view.runId(), view.source(), view.completed(), view.events());
+        if (view == null) return AuditView.pending(promptId);
+        return new AuditView(promptId, view.runId(), view.prefix(), view.source(), view.completed(),
+                view.events());
     }
 
     /** The trail for a run id, or null when unknown. */
@@ -133,7 +137,7 @@ public class AuditService {
         Trail trail = trailsByRun.get(runId);
         if (trail == null) return null;
         synchronized (trail.events) {
-            return new AuditView(null, trail.runId, trail.source, trail.completed,
+            return new AuditView(null, trail.runId, trail.prefix, trail.source, trail.completed,
                     List.copyOf(trail.events));
         }
     }
@@ -144,7 +148,7 @@ public class AuditService {
         synchronized (trailsByRun) {
             for (Trail trail : trailsByRun.values()) {
                 synchronized (trail.events) {
-                    views.add(new AuditView(null, trail.runId, trail.source, trail.completed,
+                    views.add(new AuditView(null, trail.runId, trail.prefix, trail.source, trail.completed,
                             List.copyOf(trail.events)));
                 }
             }
@@ -179,7 +183,8 @@ public class AuditService {
         StringBuilder line = new StringBuilder("[audit run=").append(runId)
                 .append(" #").append(event.seq()).append("] ").append(event.type());
         switch (event.type()) {
-            case RUN_STARTED -> line.append(" source=").append(orDash(event.detail()));
+            case RUN_STARTED -> line.append(" session=").append(SessionLabeler.prefixOf(runId))
+                    .append(" source=").append(orDash(event.detail()));
             case ROLE_STARTED -> line.append(" role=").append(event.role())
                     .append(" iteration=").append(event.iteration());
             case MODEL_REQUEST -> line.append(" role=").append(event.role())

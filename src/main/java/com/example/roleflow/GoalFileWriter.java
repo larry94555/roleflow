@@ -35,7 +35,8 @@ public class GoalFileWriter {
      */
     public String write(String kind, String runId, String content) throws IOException {
         Files.createDirectories(directory);
-        String fileName = sanitize(kind) + "-" + sanitize(runId) + ".md";
+        // e.g. goal_<prefix>_<timestamp>.md — the run id already carries the prefix and timestamp.
+        String fileName = sanitize(kind) + "_" + sanitize(runId) + ".md";
         Path file = directory.resolve(fileName);
         Files.writeString(file, content == null ? "" : content, StandardCharsets.UTF_8);
         // toUri() resolves relative directories against the working directory and yields a file:// URL.

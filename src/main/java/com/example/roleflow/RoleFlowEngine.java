@@ -33,16 +33,18 @@ public class RoleFlowEngine {
     private final RoleFlowConfig config;
     private final RoleFlowSession session;
     private final GoalFileWriter writer;
+    private final SessionLabeler labeler;
     private final AuditService audit;
     private final ObjectMapper mapper;
     private final int maxSteps;
 
     public RoleFlowEngine(RoleFlowConfig config, RoleFlowSession session, GoalFileWriter writer,
-                          AuditService audit, ObjectMapper mapper,
+                          SessionLabeler labeler, AuditService audit, ObjectMapper mapper,
                           @Value("${roleflow.max-steps:20}") int maxSteps) {
         this.config = config;
         this.session = session;
         this.writer = writer;
+        this.labeler = labeler;
         this.audit = audit;
         this.mapper = mapper;
         this.maxSteps = Math.max(1, maxSteps);
@@ -58,7 +60,8 @@ public class RoleFlowEngine {
                       ModelInvoker model, String auditId, String source) throws Exception {
         boolean fresh = session.isIdle();
         if (fresh) {
-            session.begin(config.firstRole().name());
+            // The run id carries a human-readable prefix summarizing this session's first prompt.
+            session.begin(config.firstRole().name(), labeler.newRunId(userPrompt));
         }
         String runId = session.runId();
         if (fresh) {
