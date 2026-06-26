@@ -30,7 +30,9 @@ The application does exactly these things and nothing more:
 - serves a simple web page that submits prompts and shows the response,
 - remembers the conversation and compacts it when it gets too big,
 - drives each prompt through the role workflow in `roleflow.active`,
-- records an audit trail of every role step (log file + live web page).
+- records an audit trail of every role step (log file + live web page),
+- exposes an internal **tool registry** (MCP) with a `web_search` tool — see
+  [Tool registry](#tool-registry) and [Tool_Registry.md](Tool_Registry.md).
 
 ---
 
@@ -292,6 +294,28 @@ including every clarifying iteration (visible as repeated `ROLE_STARTED` for `Ha
 increasing iteration numbers).
 
 Full details are in **[AuditInstructions.md](AuditInstructions.md)**.
+
+---
+
+## Tool registry
+
+RoleFlow has an internal **tool registry** exposed over the **Model Context Protocol (MCP)**, so tools can
+be discovered and used by internal clients. The first tool is **`web_search`** (DuckDuckGo, with a Lite
+fallback) — the key tool for resolving requests for information.
+
+- **Discover:** `POST /mcp` with `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` (or `GET /mcp/tools`).
+- **Use:** `POST /mcp` with `{"jsonrpc":"2.0","id":2,"method":"tools/call",
+  "params":{"name":"web_search","arguments":{"query":"…"}}}`.
+- **Add a tool:** add a `@Component` that implements `ToolProvider` — it is registered automatically.
+
+```bash
+curl -s http://localhost:8080/mcp -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
+       "params":{"name":"web_search","arguments":{"query":"model context protocol","max_results":3}}}'
+```
+
+Full details (adding, registering, discovering, and using tools) are in
+**[Tool_Registry.md](Tool_Registry.md)**.
 
 ---
 

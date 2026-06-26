@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Boots the full application context. The test properties disable the managed llama-server and the
@@ -61,6 +62,15 @@ class RoleFlowApplicationTests {
     @Autowired
     private GoalFileController goalFileController;
 
+    @Autowired
+    private ToolRegistry toolRegistry;
+
+    @Autowired
+    private WebSearchToolProvider webSearchToolProvider;
+
+    @Autowired
+    private McpController mcpController;
+
     @Test
     void contextLoads() {
         assertNotNull(askController);
@@ -79,5 +89,10 @@ class RoleFlowApplicationTests {
         assertNotNull(auditService);
         assertNotNull(auditController);
         assertNotNull(goalFileController);
+        assertNotNull(toolRegistry);
+        assertNotNull(webSearchToolProvider);
+        assertNotNull(mcpController);
+        // The web_search tool is discoverable through the registry.
+        assertTrue(toolRegistry.contains("web_search"));
     }
 }
