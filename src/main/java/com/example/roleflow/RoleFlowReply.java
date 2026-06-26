@@ -1,12 +1,14 @@
 package com.example.roleflow;
 
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
  * The structured reply the model returns for each role: text to show the user ({@link #message}), the
  * {@link #decision} that drives the transition, and an optional {@link #artifact} (file content). Parsing
- * is tolerant — the model may wrap the JSON in extra prose, and missing fields default to empty.
+ * is tolerant — the model may wrap the JSON in extra prose, missing fields default to empty, and literal
+ * (unescaped) newlines inside string values are accepted, since smaller models frequently emit them.
  */
 public record RoleFlowReply(String message, String decision, String artifact) {
 
@@ -17,8 +19,12 @@ public record RoleFlowReply(String message, String decision, String artifact) {
         String json = extractJsonObject(raw);
         if (json != null) {
             try {
-                JsonNode node = mapper.readTree(json);
-                if (node.isObject()) {
+                // Allow raw newlines/tabs inside JSON strings — models often format the artifact/message
+                // with real line breaks rather than \n, which strict JSON would reject.
+                JsonNode node = mapper.reader()
+                        .with(JsonParser.Feature.ALLOW_UNQUOTED_CONTROL_CHARS)
+                        .readTree(json);
+                if (node != null && node.isObject()) {
                     return new RoleFlowReply(
                             node.path("message").asText(""),
                             node.path("decision").asText(""),

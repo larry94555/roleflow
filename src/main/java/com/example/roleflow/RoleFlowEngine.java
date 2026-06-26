@@ -89,10 +89,15 @@ public class RoleFlowEngine {
             audit.modelResponse(runId, role.name(), raw, reply.decision());
             lastMessage = reply.message().isBlank() ? raw.trim() : reply.message();
 
-            if (role.hasOutput() && !reply.artifact().isBlank()) {
-                String path = writer.write(role.outputKind(), runId, reply.artifact());
-                session.addArtifact(role.outputKind(), reply.artifact(), path);
-                audit.artifactWritten(runId, role.name(), role.outputKind(), path);
+            if (role.hasOutput()) {
+                // The model is supposed to put the file content in "artifact"; smaller models sometimes
+                // put it in "message" instead. Fall back to the message so the file is still written.
+                String artifact = reply.artifact().isBlank() ? reply.message() : reply.artifact();
+                if (!artifact.isBlank()) {
+                    String path = writer.write(role.outputKind(), runId, artifact);
+                    session.addArtifact(role.outputKind(), artifact, path);
+                    audit.artifactWritten(runId, role.name(), role.outputKind(), path);
+                }
             }
 
             String target = role.resolve(reply.decision());

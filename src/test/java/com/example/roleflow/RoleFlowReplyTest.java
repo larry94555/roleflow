@@ -50,4 +50,16 @@ class RoleFlowReplyTest {
         assertEquals("", RoleFlowReply.parse(null, mapper).message());
         assertEquals("", RoleFlowReply.parse("   ", mapper).message());
     }
+
+    @Test
+    void parsesJsonWithLiteralNewlinesInStringValues() {
+        // Smaller models format the message/artifact with real line breaks instead of \n; strict JSON
+        // would reject this, but the parser tolerates it so the decision is still read correctly.
+        String raw = "{\"message\": \"Line one\nLine two\", \"decision\": \"continue\", \"artifact\": \"\"}";
+
+        RoleFlowReply reply = RoleFlowReply.parse(raw, mapper);
+
+        assertEquals("continue", reply.decision(), "decision must be read despite the literal newline");
+        assertEquals("Line one\nLine two", reply.message());
+    }
 }

@@ -140,6 +140,24 @@ class RoleFlowEngineTest {
     }
 
     @Test
+    void outputRoleWritesFileFromMessageWhenArtifactIsEmpty() throws Exception {
+        // The model puts the plan in "message" and leaves "artifact" empty — the file must still be written.
+        ScriptedModel model = new ScriptedModel()
+                .on("SignalOrRequest", json("request", "This is a request"))
+                .on("HandleRequest", json("clear", "Criteria: deliver a report"))
+                .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
+                .on("PlanBuilder", json("continue", "# Plan\\nPhase 1: prepare"))   // artifact empty
+                .on("ResponseBuilder", json("done", "All done."));
+
+        String result = engine.run("Build me a report", null, null, null, model, null, "test");
+
+        assertTrue(Files.exists(findFile("plan-")), "the plan file should be written from the message");
+        assertEquals("# Plan\nPhase 1: prepare", Files.readString(findFile("plan-")));
+        // Both files are reported in the completed run.
+        assertTrue(result.contains("Goal file: file:") && result.contains("Plan file: file:"), result);
+    }
+
+    @Test
     void reportingRoleSeesFileLocationsButNotContents() throws Exception {
         // GoalBuilder (an output role) is given prior content; ResponseBuilder (a reporting role) is not.
         session.begin("GoalBuilder");
