@@ -230,11 +230,14 @@ To make sure I get this right: should the backup run every week indefinitely,
 and where should the copies be stored?           <-- request needed clarification (paused)
 RoleFlow> Yes, weekly forever, store them on my external drive
 Your request has been turned into a goal and a plan.
-Goal file:  goals/goal-20260625-101500-9f3a.md
-Plan file:  goals/plan-20260625-101500-9f3a.md   <-- request: goal + plan written
+Goal file:  goals/goal_backup-notes_20260625-101500.md
+Plan file:  goals/plan_backup-notes_20260625-101500.md   <-- request: goal + plan written
 ```
 
-The goal and plan files share a run id so you can tell they belong to the same request.
+The file names start with a short, human-readable **prefix** summarizing the session's first prompt
+(`backup-notes`), so goals and plans made on the same day are easy to tell apart. The prefix is kept
+unique across sessions (a number is appended if it would repeat), is shared by a request's goal and plan,
+and also appears in every audit log line — so `grep backup-notes_ audit.log` returns just that session.
 
 For the complete flow — the JSON protocol each role uses, the exact transition rules, and a diagram — see
 **[CURRENT_PROCESS.md](CURRENT_PROCESS.md)**.

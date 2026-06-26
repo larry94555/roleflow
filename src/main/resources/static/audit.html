@@ -126,6 +126,7 @@
             const statusClass = view.completed ? "done" : "live";
             const statusText = view.completed ? "completed" : (id ? "in progress…" : "waiting to start…");
             metaEl.innerHTML =
+                (view.prefix ? `session: <strong>${escapeHtml(view.prefix)}</strong> · ` : "") +
                 `run: <code>${escapeHtml(view.runId || "(pending)")}</code>` +
                 (view.source ? ` · source: ${escapeHtml(view.source)}` : "") +
                 ` · <span class="status ${statusClass}">${statusText}</span>`;

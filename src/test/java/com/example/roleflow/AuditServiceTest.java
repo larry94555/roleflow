@@ -89,6 +89,14 @@ class AuditServiceTest {
     }
 
     @Test
+    void exposesSessionPrefixFromRunId() {
+        AuditService audit = new AuditService(50);
+        audit.runStarted("legendre_20260625-101010", "web");
+
+        assertEquals("legendre", audit.viewByRun("legendre_20260625-101010").prefix());
+    }
+
+    @Test
     void evictsOldestTrailsBeyondCapacity() {
         AuditService audit = new AuditService(2);
         audit.runStarted("r1", "web");

@@ -42,23 +42,34 @@ application is running, follow it in another terminal:
 tail -f audit.log
 ```
 
-A request looks like this (abridged):
+Every line carries the run id `run=<prefix>_<timestamp>`, whose leading **`<prefix>`** is a short,
+human-readable label summarizing the session's first prompt (e.g. `backup-notes`). The same prefix is used
+in the goal/plan file names, so you can isolate one whole session — across logs and files — with a single
+search:
+
+```bash
+grep "backup-notes_" audit.log        # everything for that session
+tail -f audit.log | grep "backup-notes_"
+```
+
+Prefixes are kept unique across sessions; if the same summary would recur, a number is appended
+(`backup-notes`, `backup-notes-2`, …). A request looks like this (abridged):
 
 ```
-2026-06-25 10:15:00.101 [audit run=20260625-101500-9f3a #1] RUN_STARTED source=web
-2026-06-25 10:15:00.102 [audit run=20260625-101500-9f3a #2] ROLE_STARTED role=SignalOrRequest iteration=1
-2026-06-25 10:15:00.103 [audit run=20260625-101500-9f3a #3] MODEL_REQUEST role=SignalOrRequest
+2026-06-25 10:15:00.101 [audit run=backup-notes_20260625-101500 #1] RUN_STARTED session=backup-notes source=web
+2026-06-25 10:15:00.102 [audit run=backup-notes_20260625-101500 #2] ROLE_STARTED role=SignalOrRequest iteration=1
+2026-06-25 10:15:00.103 [audit run=backup-notes_20260625-101500 #3] MODEL_REQUEST role=SignalOrRequest
     system-prompt: You are RoleFlow ... Current role: SignalOrRequest ...
     user-prompt: Set up a weekly backup of my notes folder
-2026-06-25 10:15:01.880 [audit run=20260625-101500-9f3a #4] MODEL_RESPONSE role=SignalOrRequest decision=request
+2026-06-25 10:15:01.880 [audit run=backup-notes_20260625-101500 #4] MODEL_RESPONSE role=SignalOrRequest decision=request
     response: {"message":"This is a request","decision":"request","artifact":""}
-2026-06-25 10:15:01.881 [audit run=20260625-101500-9f3a #5] TRANSITION role=SignalOrRequest decision 'request' -> HandleRequest
-2026-06-25 10:15:01.882 [audit run=20260625-101500-9f3a #6] ROLE_STARTED role=HandleRequest iteration=1
+2026-06-25 10:15:01.881 [audit run=backup-notes_20260625-101500 #5] TRANSITION role=SignalOrRequest decision 'request' -> HandleRequest
+2026-06-25 10:15:01.882 [audit run=backup-notes_20260625-101500 #6] ROLE_STARTED role=HandleRequest iteration=1
 ...
-2026-06-25 10:15:05.210 [audit run=...] ARTIFACT_WRITTEN role=GoalBuilder kind=goal path=goals/goal-20260625-101500-9f3a.md
+2026-06-25 10:15:05.210 [audit run=backup-notes_...] ARTIFACT_WRITTEN role=GoalBuilder kind=goal path=file:///.../goals/goal_backup-notes_20260625-101500.md
 ...
-2026-06-25 10:15:07.640 [audit run=...] TRANSITION role=ResponseBuilder decision 'done' -> done (run complete)
-2026-06-25 10:15:07.641 [audit run=...] RUN_COMPLETED finalRole=ResponseBuilder
+2026-06-25 10:15:07.640 [audit run=backup-notes_...] TRANSITION role=ResponseBuilder decision 'done' -> done (run complete)
+2026-06-25 10:15:07.641 [audit run=backup-notes_...] RUN_COMPLETED finalRole=ResponseBuilder
 ```
 
 The audit is also echoed to the console where the app runs. The `run=<id>` value is the run id; you can

@@ -104,12 +104,15 @@ A safety cap (`roleflow.max-steps`, default 20) stops runaway loops.
 
 For a request, files are written to the `goals/` directory (configurable via `roleflow.goals-dir`):
 
-- `goal-<runId>.md` — the goal document from GoalBuilder.
-- `plan-<runId>.md` — the plan document from PlanBuilder.
+- `goal_<prefix>_<timestamp>.md` — the goal document from GoalBuilder.
+- `plan_<prefix>_<timestamp>.md` — the plan document from PlanBuilder.
 
-The `runId` is created when a request's run begins and is reused across clarification pauses, so a
-request's goal and plan files share the same id. These files are human-readable and are also fed back into
-later roles as context.
+The `<prefix>` is a short, human-readable label summarizing the session's first prompt (e.g.
+`search-integers-counterexample`), kept unique across sessions by appending a number when needed
+(`legendre`, `legendre-2`, …). It is the leading part of the run id, so a whole session's files and log
+lines can be found with a single `grep <prefix>_`. The `<timestamp>` (`yyyyMMdd-HHmmss`) is created when a
+request's run begins and is reused across clarification pauses, so a request's goal and plan files share
+the same id. These files are human-readable and are also fed back into later roles as context.
 
 To keep the final reply accurate, an **output-producing** role (e.g. PlanBuilder) is given the prior
 artifacts' **content** so it can build on them, while a **reporting** role (ResponseBuilder) is given only
@@ -120,8 +123,8 @@ reply as `file:///` URLs, for example:
 The goal and plan were created successfully.
 
 Files created:
-- Goal file: file:///C:/Users/larry/github/roleflow/goals/goal-20260625-164426-8012.md
-- Plan file: file:///C:/Users/larry/github/roleflow/goals/plan-20260625-164426-8012.md
+- Goal file: file:///C:/Users/larry/github/roleflow/goals/goal_legendre_20260625-164426.md
+- Plan file: file:///C:/Users/larry/github/roleflow/goals/plan_legendre_20260625-164426.md
 ```
 
 This way the exact paths come from the engine rather than being transcribed (and possibly garbled) by the
