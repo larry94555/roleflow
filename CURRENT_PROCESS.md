@@ -85,8 +85,9 @@ A safety cap (`roleflow.max-steps`, default 20) stops runaway loops.
    one-time or ongoing) and **writes a goal file** to `goals/`. → role 5.
 5. **PlanBuilder (Plan author)** — using the goal, builds a four-phase plan (Preparation, Action,
    Verification, Next steps) and **writes a plan file** to `goals/`. → role 6.
-6. **ResponseBuilder (Final responder)** — tells the user the goal and plan were created and reports the
-   file locations. → `done`.
+6. **ResponseBuilder (Final responder)** — gives a brief confirmation that the goal and plan were created.
+   The engine then appends the exact file locations as `file:///` URLs (see [Files written](#files-written)).
+   → `done`.
 
 ## What the user experiences
 
@@ -108,7 +109,23 @@ For a request, files are written to the `goals/` directory (configurable via `ro
 
 The `runId` is created when a request's run begins and is reused across clarification pauses, so a
 request's goal and plan files share the same id. These files are human-readable and are also fed back into
-later roles as context (for example, PlanBuilder sees the goal, and ResponseBuilder reports the paths).
+later roles as context.
+
+To keep the final reply accurate, an **output-producing** role (e.g. PlanBuilder) is given the prior
+artifacts' **content** so it can build on them, while a **reporting** role (ResponseBuilder) is given only
+the file **locations**. When the run completes, the engine appends the authoritative file links to the
+reply as `file:///` URLs, for example:
+
+```
+The goal and plan were created successfully.
+
+Files created:
+- Goal file: file:///C:/Users/larry/github/roleflow/goals/goal-20260625-164426-8012.md
+- Plan file: file:///C:/Users/larry/github/roleflow/goals/plan-20260625-164426-8012.md
+```
+
+This way the exact paths come from the engine rather than being transcribed (and possibly garbled) by the
+model, and they can be opened directly from a browser.
 
 ## Relationship to memory
 

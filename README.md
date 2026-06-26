@@ -210,7 +210,8 @@ The shipped workflow has six roles:
 4. **GoalBuilder** — write the **goal** (the criteria for success) to a file in `goals/`.
 5. **PlanBuilder** — write a four-phase **plan** (Preparation, Action, Verification, Next steps) to a
    file in `goals/`.
-6. **ResponseBuilder** — tell you the goal and plan were created and where the files are.
+6. **ResponseBuilder** — confirm the goal and plan were created; the engine then appends the exact file
+   locations as `file:///` URLs you can open from a browser.
 
 So a single prompt produces **multiple `llama-server` calls — at least one per role.** A signal takes two
 calls and writes nothing; a request runs through all the roles and writes a **goal file** and a **plan

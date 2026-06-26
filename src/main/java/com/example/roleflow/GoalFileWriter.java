@@ -30,15 +30,16 @@ public class GoalFileWriter {
     }
 
     /**
-     * Writes {@code content} to {@code <goals-dir>/<kind>-<runId>.md} and returns the file path as a
-     * forward-slash string suitable for display.
+     * Writes {@code content} to {@code <goals-dir>/<kind>-<runId>.md} and returns its absolute location as
+     * a {@code file:///} URL, so it can be reported to the user and opened from a browser.
      */
     public String write(String kind, String runId, String content) throws IOException {
         Files.createDirectories(directory);
         String fileName = sanitize(kind) + "-" + sanitize(runId) + ".md";
         Path file = directory.resolve(fileName);
         Files.writeString(file, content == null ? "" : content, StandardCharsets.UTF_8);
-        return file.toString().replace('\\', '/');
+        // toUri() resolves relative directories against the working directory and yields a file:// URL.
+        return file.toAbsolutePath().normalize().toUri().toString();
     }
 
     private static String sanitize(String value) {

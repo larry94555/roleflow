@@ -118,7 +118,15 @@ class RoleFlowEngineTest {
 
         String result = engine.run("Build me a report", null, null, null, model, null, "test");
 
-        assertEquals("Done: goal and plan created.", result);
+        // The model's confirmation comes first, then the engine appends the exact file links.
+        assertTrue(result.startsWith("Done: goal and plan created."), result);
+        assertTrue(result.contains("Files created:"), result);
+        assertTrue(result.contains("Goal file: file:"), "the goal file URL should be reported");
+        assertTrue(result.contains("Plan file: file:"), "the plan file URL should be reported");
+        assertTrue(result.contains("goal-") && result.contains("plan-"));
+        // The file *contents* must not be pasted into the response (the bug this fixes).
+        assertFalse(result.contains("Deliver a report"), "must report locations, not file contents");
+
         assertEquals(List.of("SignalOrRequest", "HandleRequest", "GoalBuilder",
                 "PlanBuilder", "ResponseBuilder"), model.rolesInvoked);
         // The user prompt is unchanged across the whole auto-advancing run.
@@ -129,6 +137,20 @@ class RoleFlowEngineTest {
         assertTrue(Files.exists(findFile("goal-")), "goal file should exist");
         assertTrue(Files.exists(findFile("plan-")), "plan file should exist");
         assertEquals("# Goal\nDeliver a report", Files.readString(findFile("goal-")));
+    }
+
+    @Test
+    void reportingRoleSeesFileLocationsButNotContents() throws Exception {
+        // GoalBuilder (an output role) is given prior content; ResponseBuilder (a reporting role) is not.
+        session.begin("GoalBuilder");
+        session.addArtifact("goal", "SECRET GOAL BODY", "file:///tmp/goal-1.md");
+
+        String reportingPrompt = engine.buildSystemPrompt(config.byName("ResponseBuilder"), null);
+        assertTrue(reportingPrompt.contains("file:///tmp/goal-1.md"), "reporting role should see the location");
+        assertFalse(reportingPrompt.contains("SECRET GOAL BODY"), "reporting role must not see file contents");
+
+        String outputPrompt = engine.buildSystemPrompt(config.byName("PlanBuilder"), null);
+        assertTrue(outputPrompt.contains("SECRET GOAL BODY"), "an output role may use prior content");
     }
 
     @Test
@@ -152,7 +174,8 @@ class RoleFlowEngineTest {
 
         // The user's answer resumes at the clarifier and runs to completion.
         String result = engine.run("A PDF, please", null, null, null, model, null, "test");
-        assertEquals("All set.", result);
+        assertTrue(result.startsWith("All set."), result);
+        assertTrue(result.contains("Files created:") && result.contains("file:"), result);
         assertTrue(session.isIdle());
         assertEquals(2, fileCount());
     }

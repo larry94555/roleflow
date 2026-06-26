@@ -71,8 +71,7 @@ public class RoleFlowEngine {
             Role role = config.byName(session.currentRole());
             if (role == null) { // a transition pointed at a role that does not exist
                 audit.runCompleted(runId, session.currentRole());
-                session.reset();
-                return lastMessage;
+                return complete(lastMessage);
             }
 
             audit.roleStarted(runId, role.name());
@@ -101,8 +100,7 @@ public class RoleFlowEngine {
                 audit.transition(runId, role.name(),
                         "decision '" + reply.decision() + "' -> done (run complete)");
                 audit.runCompleted(runId, role.name());
-                session.reset();
-                return lastMessage;
+                return complete(lastMessage);
             }
             if (target.equalsIgnoreCase(role.name())) {
                 // Self-transition: the role asked the user something; pause and wait for their reply.
@@ -116,8 +114,7 @@ public class RoleFlowEngine {
                 audit.transition(runId, role.name(),
                         "decision '" + reply.decision() + "' -> " + target + " (no such role: run complete)");
                 audit.runCompleted(runId, role.name());
-                session.reset();
-                return lastMessage;
+                return complete(lastMessage);
             }
             audit.transition(runId, role.name(),
                     "decision '" + reply.decision() + "' -> " + config.byName(target).name());
@@ -126,8 +123,36 @@ public class RoleFlowEngine {
 
         // Safety cap: stop runaway loops.
         audit.runCompleted(runId, session.currentRole());
+        return complete(lastMessage);
+    }
+
+    /**
+     * Finishes a run: appends the exact {@code file:///} links for any artifacts created (so the file
+     * locations are authoritative rather than transcribed by the model), then resets the session. Must
+     * read the artifacts before {@link RoleFlowSession#reset()} clears them.
+     */
+    private String complete(String lastMessage) {
+        String message = withArtifactLinks(lastMessage);
         session.reset();
-        return lastMessage;
+        return message;
+    }
+
+    private String withArtifactLinks(String message) {
+        Map<String, String> locations = session.artifactPaths();
+        if (locations.isEmpty()) {
+            return message;
+        }
+        StringBuilder builder = new StringBuilder(message == null ? "" : message);
+        builder.append("\n\nFiles created:");
+        for (Map.Entry<String, String> entry : locations.entrySet()) {
+            builder.append("\n- ").append(capitalize(entry.getKey())).append(" file: ").append(entry.getValue());
+        }
+        return builder.toString();
+    }
+
+    private static String capitalize(String value) {
+        if (value == null || value.isEmpty()) return value;
+        return Character.toUpperCase(value.charAt(0)) + value.substring(1);
     }
 
     String buildSystemPrompt(Role role, String systemOverride) {
@@ -148,13 +173,27 @@ public class RoleFlowEngine {
                     .append(" artifact: put its full human-readable content in \"artifact\".\n");
         }
 
-        Map<String, String> paths = session.artifactPaths();
-        if (!paths.isEmpty()) {
-            Map<String, String> contents = session.artifactContents();
-            prompt.append("\nArtifacts already created in this request:\n");
-            for (Map.Entry<String, String> entry : paths.entrySet()) {
-                prompt.append("- ").append(entry.getKey()).append(" file: ").append(entry.getValue())
-                        .append("\n").append(contents.getOrDefault(entry.getKey(), "")).append("\n");
+        Map<String, String> locations = session.artifactPaths();
+        if (!locations.isEmpty()) {
+            prompt.append("\nFiles already created in this request:\n");
+            for (Map.Entry<String, String> entry : locations.entrySet()) {
+                prompt.append("- ").append(entry.getKey()).append(" file: ").append(entry.getValue()).append("\n");
+            }
+            if (role.hasOutput()) {
+                // A role that builds on prior artifacts (e.g. the plan uses the goal) gets their content.
+                Map<String, String> contents = session.artifactContents();
+                prompt.append("\nContent of those files, for your reference ")
+                        .append("(do not copy it verbatim into your reply):\n");
+                for (Map.Entry<String, String> entry : contents.entrySet()) {
+                    prompt.append("--- ").append(entry.getKey()).append(" ---\n")
+                            .append(entry.getValue()).append("\n");
+                }
+            } else {
+                // A reporting role only needs the locations; withholding the content stops it from
+                // pasting a file's body where its path belongs. The exact links are appended by the
+                // engine when the run completes (see withArtifactLinks).
+                prompt.append("Report these file locations to the user. ")
+                        .append("Do not paste the file contents.\n");
             }
         }
 
