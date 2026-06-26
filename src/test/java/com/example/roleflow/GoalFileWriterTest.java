@@ -12,16 +12,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class GoalFileWriterTest {
 
     @Test
-    void writesArtifactNamedByKindAndRunId(@TempDir Path dir) throws Exception {
+    void writesArtifactNamedByKindAndRunIdAndReturnsFileUrl(@TempDir Path dir) throws Exception {
         GoalFileWriter writer = new GoalFileWriter(dir);
 
-        String path = writer.write("goal", "20260625-101010-abcd", "# Goal\nDo the thing.");
+        String url = writer.write("goal", "20260625-101010-abcd", "# Goal\nDo the thing.");
 
         Path expected = dir.resolve("goal-20260625-101010-abcd.md");
         assertTrue(Files.exists(expected), "the goal file should be created");
         assertEquals("# Goal\nDo the thing.", Files.readString(expected));
-        assertTrue(path.endsWith("goal-20260625-101010-abcd.md"));
-        assertTrue(path.contains("/"), "returned path should use forward slashes");
+        // The returned location is an absolute file:// URL ending in the file name.
+        assertTrue(url.startsWith("file:"), "returned location should be a file URL: " + url);
+        assertTrue(url.endsWith("goal-20260625-101010-abcd.md"));
+        assertEquals(expected.toUri().toString(), url);
     }
 
     @Test

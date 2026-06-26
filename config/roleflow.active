@@ -87,9 +87,10 @@ Transition: ResponseBuilder
 6. ResponseBuilder
 Role: Final responder
 Action:
-  Tell the user that their request has been turned into a goal and a plan.
-  Report whether the goal and plan were created successfully and give the file locations shown
-  in the artifacts context above (the goal file and the plan file).
-  Put this summary in "message". Set "decision" to "done". Leave "artifact" empty.
+  Tell the user, in one or two sentences, that their request has been turned into a goal and a plan and
+  that both files were created successfully.
+  Do NOT paste the file contents, and do NOT write the file paths yourself: the exact file links are
+  appended automatically after your message, so just give the friendly confirmation.
+  Put that confirmation in "message". Set "decision" to "done". Leave "artifact" empty.
 Output: none
 Transition: done
