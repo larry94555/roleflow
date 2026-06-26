@@ -71,6 +71,7 @@ class RoleFlowEngineTest {
     private RoleFlowConfig config;
     private RoleFlowSession session;
     private GoalFileWriter writer;
+    private AuditService audit;
     private RoleFlowEngine engine;
 
     @BeforeEach
@@ -78,7 +79,8 @@ class RoleFlowEngineTest {
         config = new RoleFlowConfig(RoleFlowConfig.parse(Files.readString(Path.of("config/roleflow.active"))));
         session = new RoleFlowSession();
         writer = new GoalFileWriter(goalsDir);
-        engine = new RoleFlowEngine(config, session, writer, new ObjectMapper(), 20);
+        audit = new AuditService(50);
+        engine = new RoleFlowEngine(config, session, writer, audit, new ObjectMapper(), 20);
         this.goalsDir = goalsDir;
     }
 
@@ -97,7 +99,7 @@ class RoleFlowEngineTest {
                 .on("SignalOrRequest", json("signal", "This looks like a greeting"))
                 .on("SignalResponse", json("done", "Hello to you too!"));
 
-        String result = engine.run("Hello", null, null, null, model);
+        String result = engine.run("Hello", null, null, null, model, null, "test");
 
         assertEquals("Hello to you too!", result);
         assertEquals(List.of("SignalOrRequest", "SignalResponse"), model.rolesInvoked);
@@ -114,7 +116,7 @@ class RoleFlowEngineTest {
                 .on("PlanBuilder", jsonWithArtifact("continue", "plan built", "# Plan\\nPhase 1..."))
                 .on("ResponseBuilder", json("done", "Done: goal and plan created."));
 
-        String result = engine.run("Build me a report", null, null, null, model);
+        String result = engine.run("Build me a report", null, null, null, model, null, "test");
 
         assertEquals("Done: goal and plan created.", result);
         assertEquals(List.of("SignalOrRequest", "HandleRequest", "GoalBuilder",
@@ -141,7 +143,7 @@ class RoleFlowEngineTest {
                 .on("ResponseBuilder", json("done", "All set."));
 
         // First prompt: classifier + clarifier, then pause waiting for the user.
-        String question = engine.run("Make me a report", null, null, null, model);
+        String question = engine.run("Make me a report", null, null, null, model, null, "test");
         assertEquals("What format do you want the report in?", question);
         assertEquals(List.of("SignalOrRequest", "HandleRequest"), model.rolesInvoked);
         assertFalse(session.isIdle(), "should be paused mid-flow at the clarifier");
@@ -149,7 +151,7 @@ class RoleFlowEngineTest {
         assertEquals(0, fileCount(), "no files until the request is clarified");
 
         // The user's answer resumes at the clarifier and runs to completion.
-        String result = engine.run("A PDF, please", null, null, null, model);
+        String result = engine.run("A PDF, please", null, null, null, model, null, "test");
         assertEquals("All set.", result);
         assertTrue(session.isIdle());
         assertEquals(2, fileCount());
@@ -161,7 +163,7 @@ class RoleFlowEngineTest {
                 .on("SignalOrRequest", json("request", "This is a request"))
                 .on("HandleRequest", json("cancelled", "Okay, I've cancelled that."));
 
-        String result = engine.run("Actually never mind", null, null, null, model);
+        String result = engine.run("Actually never mind", null, null, null, model, null, "test");
 
         assertEquals("Okay, I've cancelled that.", result);
         assertEquals(List.of("SignalOrRequest", "HandleRequest"), model.rolesInvoked);
@@ -174,14 +176,92 @@ class RoleFlowEngineTest {
         RoleFlowConfig tiny = new RoleFlowConfig(RoleFlowConfig.parse(
                 "1. Start\nRole: x\nAction: do it\nTransition: go -> Ghost\n"));
         RoleFlowEngine tinyEngine = new RoleFlowEngine(
-                tiny, session, writer, new ObjectMapper(), 20);
+                tiny, session, writer, audit, new ObjectMapper(), 20);
         ScriptedModel model = new ScriptedModel().on("Start", json("go", "went nowhere"));
 
-        String result = tinyEngine.run("hi", null, null, null, model);
+        String result = tinyEngine.run("hi", null, null, null, model, null, "test");
 
         assertEquals("went nowhere", result);
         assertEquals(1, model.rolesInvoked.size());
         assertTrue(session.isIdle(), "a transition to a missing role ends the run");
+    }
+
+    @Test
+    void recordsAFullAuditTrailForARequest() throws Exception {
+        ScriptedModel model = new ScriptedModel()
+                .on("SignalOrRequest", json("request", "This is a request"))
+                .on("HandleRequest", json("clear", "Criteria: deliver a report"))
+                .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
+                .on("PlanBuilder", jsonWithArtifact("continue", "plan built", "# Plan"))
+                .on("ResponseBuilder", json("done", "All done."));
+
+        engine.run("Build me a report", null, null, null, model, "PID-1", "web");
+
+        AuditView view = audit.viewByPrompt("PID-1");
+        assertTrue(view.completed(), "the run should be marked completed");
+        List<AuditEvent> events = view.events();
+
+        // Each role is recorded with its prompt, system prompt, and response.
+        AuditEvent firstRequest = events.stream()
+                .filter(e -> e.type() == AuditEvent.Type.MODEL_REQUEST)
+                .findFirst().orElseThrow();
+        assertEquals("SignalOrRequest", firstRequest.role());
+        assertEquals("Build me a report", firstRequest.userPrompt());
+        assertTrue(firstRequest.systemPrompt().contains("Current role: SignalOrRequest"),
+                "the system prompt used should be captured");
+
+        assertTrue(hasType(events, AuditEvent.Type.RUN_STARTED));
+        assertEquals(5, count(events, AuditEvent.Type.ROLE_STARTED), "one ROLE_STARTED per role");
+        assertEquals(5, count(events, AuditEvent.Type.MODEL_RESPONSE));
+        // The transition handling is called out, including the final "-> done".
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
+                && e.transition().contains("request") && e.transition().contains("HandleRequest")));
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
+                && e.transition().contains("done")));
+        // Goal and plan artifacts are recorded.
+        assertEquals(2, count(events, AuditEvent.Type.ARTIFACT_WRITTEN));
+        assertTrue(hasType(events, AuditEvent.Type.RUN_COMPLETED));
+    }
+
+    @Test
+    void auditCapturesClarificationIterations() throws Exception {
+        ScriptedModel model = new ScriptedModel()
+                .on("SignalOrRequest", json("request", "This is a request"))
+                .on("HandleRequest",
+                        json("unclear", "Which folder should I back up?"),
+                        json("clear", "Criteria: back up the notes folder"))
+                .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
+                .on("PlanBuilder", jsonWithArtifact("continue", "plan built", "# Plan"))
+                .on("ResponseBuilder", json("done", "All set."));
+
+        // First submission pauses for clarification; the trail is not yet complete.
+        engine.run("Back up my stuff", null, null, null, model, "PID-2", "web");
+        AuditView paused = audit.viewByPrompt("PID-2");
+        assertFalse(paused.completed(), "paused run should not be complete");
+        assertTrue(hasType(paused.events(), AuditEvent.Type.CLARIFICATION_PAUSE));
+
+        // The clarification answer resumes the SAME run; a second prompt id maps to the same trail.
+        engine.run("My notes folder", null, null, null, model, "PID-2b", "web");
+        AuditView resumed = audit.viewByPrompt("PID-2b");
+        assertEquals(resumed.runId(), paused.runId(), "both prompts belong to the same run");
+        assertTrue(resumed.completed());
+
+        // HandleRequest was entered twice — the clarifying iteration is visible in the audit.
+        long handleStarts = resumed.events().stream()
+                .filter(e -> e.type() == AuditEvent.Type.ROLE_STARTED && "HandleRequest".equals(e.role()))
+                .count();
+        assertEquals(2, handleStarts, "the clarifying iteration should be recorded");
+        assertTrue(resumed.events().stream().anyMatch(
+                e -> e.type() == AuditEvent.Type.ROLE_STARTED && "HandleRequest".equals(e.role())
+                        && e.iteration() != null && e.iteration() == 2));
+    }
+
+    private static boolean hasType(List<AuditEvent> events, AuditEvent.Type type) {
+        return events.stream().anyMatch(e -> e.type() == type);
+    }
+
+    private static long count(List<AuditEvent> events, AuditEvent.Type type) {
+        return events.stream().filter(e -> e.type() == type).count();
     }
 
     private Path findFile(String prefix) throws Exception {

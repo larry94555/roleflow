@@ -39,10 +39,11 @@ class ConversationServiceTest {
     /** Builds a service in plain (no-workflow) mode so these tests exercise the single-call path. */
     private ConversationService plainService(ConversationMemory memory, LlamaClient llama, String defaultSystem) {
         RoleFlowConfig inactive = new RoleFlowConfig(List.of());
+        AuditService audit = new AuditService(50);
         RoleFlowEngine engine = new RoleFlowEngine(
                 inactive, new RoleFlowSession(), new GoalFileWriter(Path.of("target/test-goals")),
-                new ObjectMapper(), 20);
-        return new ConversationService(memory, llama, inactive, engine, 1024, defaultSystem);
+                audit, new ObjectMapper(), 20);
+        return new ConversationService(memory, llama, inactive, engine, audit, 1024, defaultSystem);
     }
 
     @Test
@@ -101,14 +102,19 @@ class ConversationServiceTest {
         FakeLlamaClient llama = new FakeLlamaClient(
                 "{\"message\":\"is a signal\",\"decision\":\"signal\"}",
                 "{\"message\":\"Hi there!\",\"decision\":\"done\"}");
+        AuditService audit = new AuditService(50);
         RoleFlowEngine engine = new RoleFlowEngine(active, new RoleFlowSession(),
-                new GoalFileWriter(Path.of("target/test-goals")), new ObjectMapper(), 20);
+                new GoalFileWriter(Path.of("target/test-goals")), audit, new ObjectMapper(), 20);
         ConversationService service = new ConversationService(
-                memory((p, m) -> "", 8192), llama, active, engine, 1024, "");
+                memory((p, m) -> "", 8192), llama, active, engine, audit, 1024, "");
 
-        String result = service.reply(null, "Hello", null, null);
+        String result = service.reply(null, "Hello", null, null, "PID-web", "web");
 
         assertEquals("Hi there!", result, "the user should see the final role's message");
         assertEquals(2, llama.payloads.size(), "one model call per role in the workflow");
+        // The prompt's audit trail is reachable by the client-supplied id.
+        AuditView view = audit.viewByPrompt("PID-web");
+        assertTrue(view.completed());
+        assertEquals("web", view.source());
     }
 }

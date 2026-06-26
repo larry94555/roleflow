@@ -28,8 +28,14 @@ public class AskController {
         if (request == null || request.prompt() == null || request.prompt().isBlank()) {
             throw new IllegalArgumentException("prompt is required");
         }
+        String auditId = request.auditId();
         String response = conversation.reply(
-                request.system(), request.prompt(), request.maxTokens(), request.temperature());
+                request.system(), request.prompt(), request.maxTokens(), request.temperature(),
+                auditId, "web");
+        // Echo the audit id back so the web page can link to this prompt's audit trail.
+        if (auditId != null && !auditId.isBlank()) {
+            return Map.of("response", response, "auditId", auditId);
+        }
         return Map.of("response", response);
     }
 
@@ -39,5 +45,6 @@ public class AskController {
         return Map.of("error", error.getMessage());
     }
 
-    public record AskRequest(String prompt, String system, Integer maxTokens, Double temperature) {}
+    public record AskRequest(String prompt, String system, Integer maxTokens, Double temperature,
+                             String auditId) {}
 }

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- Spring Boot's standard console appender and patterns. -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <!-- Audit log file path (configurable via roleflow.audit.log-file). -->
+    <springProperty scope="context" name="auditLogFile"
+                    source="roleflow.audit.log-file" defaultValue="audit.log"/>
+
+    <appender name="AUDIT_FILE" class="ch.qos.logback.core.FileAppender">
+        <file>${auditLogFile}</file>
+        <append>true</append>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- The dedicated audit logger writes to the audit file and (via the root) the console too. -->
+    <logger name="com.example.roleflow.audit" level="INFO" additivity="true">
+        <appender-ref ref="AUDIT_FILE"/>
+    </logger>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

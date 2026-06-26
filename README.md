@@ -18,13 +18,19 @@ real requests. This means a single prompt usually results in **several** calls t
 role. See [Role workflow](#role-workflow) below and [CURRENT_PROCESS.md](CURRENT_PROCESS.md) for the full
 flow.
 
+Every prompt is also **audited**: each role that runs, the prompt and system prompt used, the model's
+response, and how the transition was handled are recorded to a log file (follow it with `tail -f`) and to
+a live **audit web page**. See [Audit and logging](#audit-and-logging) and
+[AuditInstructions.md](AuditInstructions.md).
+
 The application does exactly these things and nothing more:
 
 - starts and supervises `llama-server` (same launch behavior as goalmaker),
 - accepts prompts typed at the terminal,
 - serves a simple web page that submits prompts and shows the response,
 - remembers the conversation and compacts it when it gets too big,
-- drives each prompt through the role workflow in `roleflow.active`.
+- drives each prompt through the role workflow in `roleflow.active`,
+- records an audit trail of every role step (log file + live web page).
 
 ---
 
@@ -103,6 +109,10 @@ http://localhost:8080/
 
 Enter an optional **system prompt**, type your **prompt**, and click **Send** (or press **Ctrl+Enter**).
 The model's response appears below the button.
+
+When you click **Send**, a **"🔎 View audit trail for this prompt ↗"** link appears and the audit page
+opens in a new tab, so you can watch each role run live as the prompt is processed. See
+[Audit and logging](#audit-and-logging).
 
 ---
 
@@ -235,6 +245,52 @@ to **plain single-call mode**: each prompt is answered with one model call and n
 
 ---
 
+## Audit and logging
+
+Every prompt produces an **audit trail** — for each role that runs, the trail records the **user prompt**,
+the **system prompt** used, the **model's response**, the **decision**, how the **transition** was handled,
+and any **clarification iterations**. It is available two ways.
+
+### As a log file (`tail -f`)
+
+Audit events are written to **`audit.log`** (in the working directory) and echoed to the console. Follow
+the trail live from another terminal:
+
+```bash
+tail -f audit.log
+```
+
+```
+[audit run=20260625-101500-9f3a #2] ROLE_STARTED role=SignalOrRequest iteration=1
+[audit run=20260625-101500-9f3a #3] MODEL_REQUEST role=SignalOrRequest
+    system-prompt: You are RoleFlow ... Current role: SignalOrRequest ...
+    user-prompt: Set up a weekly backup of my notes folder
+[audit run=20260625-101500-9f3a #4] MODEL_RESPONSE role=SignalOrRequest decision=request
+    response: {"message":"This is a request","decision":"request","artifact":""}
+[audit run=20260625-101500-9f3a #5] TRANSITION role=SignalOrRequest decision 'request' -> HandleRequest
+```
+
+### As a web page (watch live)
+
+The audit web page polls a trail and renders events as they arrive, so you can watch a prompt being
+processed and scroll through the full trail.
+
+- **From the prompt page:** clicking **Send** reveals a **"🔎 View audit trail for this prompt ↗"** link
+  and opens the audit page in a new tab for that exact prompt. It updates live — including after you answer
+  a clarifying question, since the answer continues the **same** run.
+- **By run id (e.g. a terminal prompt):** find the `run=<id>` value in `audit.log` and open
+  `http://localhost:8080/audit.html?run=<run-id>`.
+
+Raw JSON is available at `GET /audit/{promptId}`, `GET /audit/run/{runId}`, and `GET /audit` (recent runs).
+
+Because a request's run id persists across clarification rounds, **one trail covers the whole request**,
+including every clarifying iteration (visible as repeated `ROLE_STARTED` for `HandleRequest` with
+increasing iteration numbers).
+
+Full details are in **[AuditInstructions.md](AuditInstructions.md)**.
+
+---
+
 ## How to end the application
 
 - Press **Ctrl+C** in the terminal where the application is running. Spring Boot shuts down and stops the
@@ -260,6 +316,8 @@ and can be overridden on the command line, e.g. `--server.port=9000`. The most u
 | `roleflow.config`         | `config/roleflow.active` | Workflow file. Empty/missing → plain single-call mode.  |
 | `roleflow.goals-dir`      | `goals`                | Directory where goal and plan files are written.         |
 | `roleflow.max-steps`      | `20`                   | Safety cap on role steps processed per prompt.           |
+| `roleflow.audit.log-file` | `audit.log`            | Audit log file to follow with `tail -f`.                 |
+| `roleflow.audit.max-trails` | `50`                 | Recent runs kept in memory for the audit web view.       |
 | `prompt.max-tokens`       | `1024`                 | Default response length cap (also the response reserve). |
 | `memory.max-tokens`       | `8192`                 | `MAX_TOKEN_SIZE` — memory compacts to stay under this.   |
 | `memory.chars-per-token`  | `4`                    | Chars-per-token ratio used to estimate sizes locally.    |
@@ -305,11 +363,17 @@ src/main/java/com/example/roleflow/
   Role.java                    One workflow step (action + transitions)
   RoleFlowReply.java           Parses the model's {message,decision,artifact} JSON
   RoleFlowSession.java         Per-session flow state (current role, run id, artifacts)
-  RoleFlowEngine.java          Drives a prompt through the roles
+  RoleFlowEngine.java          Drives a prompt through the roles (emits audit events)
   GoalFileWriter.java          Writes goal/plan files into goals/
+  AuditEvent.java              One audit event (role, prompts, response, transition…)
+  AuditService.java            Collects audit trails; writes the audit log
+  AuditView.java               A trail snapshot returned to the audit web page
+  AuditController.java         GET /audit endpoints for the audit page
 src/main/resources/
   application.properties       Configuration
-  static/index.html            The web page
+  logback-spring.xml           Routes the audit logger to audit.log
+  static/index.html            The prompt web page (with the audit link)
+  static/audit.html            The live audit web page
 config/
   roleflow.active              The role workflow the engine runs
   roleflow.proposed            The human-authored source for the workflow
@@ -317,4 +381,5 @@ goals/                         Goal and plan files written for requests
 src/test/java/com/example/roleflow/
   ...Test.java                 Unit and context tests
 CURRENT_PROCESS.md             Detailed explanation of the role workflow
+AuditInstructions.md           How to use the audit log and audit web page
 ```
