@@ -50,6 +50,19 @@ class TopicResearcherTest {
     }
 
     @Test
+    void surfacesProviderNotesWhenThereAreNoResults() {
+        // When the search returns no results, the provider's notes (e.g. an HTTP status) are included so
+        // an empty topic context is diagnosable in the audit trail.
+        String json = "{\"results\":[],\"notes\":[\"duckduckgo-html: HTTP 202\",\"duckduckgo-lite: no results\"]}";
+
+        String context = researcher(args -> json).context("mathematics");
+
+        assertTrue(context.contains("No web results"), context);
+        assertTrue(context.contains("duckduckgo-html: HTTP 202"), context);
+        assertTrue(context.contains("duckduckgo-lite: no results"), context);
+    }
+
+    @Test
     void returnsANoteWhenTheSearchFails() {
         String context = researcher(args -> { throw new IllegalStateException("network down"); })
                 .context("anything");

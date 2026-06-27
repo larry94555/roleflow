@@ -13,11 +13,17 @@
 #                role that must analyse an artifact opts in with this field, while a pure reporting role
 #                (ResponseBuilder) omits it and is shown only the file locations.
 #   Compute:     optional. Names an engine built-in that produces the role's result DETERMINISTICALLY in
-#                code instead of calling the model (e.g. "Compute: classify-steps"). Used where the output
-#                format is fixed (StepReviewer classifies plan steps). No model call is made for the role.
-#   Research:    optional. When present (e.g. "Research: topic"), the engine runs a web search on the
-#                request's topic (via the web_search tool) and includes the results as a "Web context"
-#                section in this role's system prompt, so the role can sanity-check against real-world facts.
+#                code instead of calling the model (e.g. "Compute: classify-steps", "Compute:
+#                build-topic-context"). No model call is made for the role.
+#   Research:    optional. When present (e.g. "Research: topic"), the engine includes the run's TOPIC
+#                CONTEXT (gathered by the TopicContextBuilder role) in this role's system prompt, so the
+#                role can interpret the prompt correctly and sanity-check against real-world facts.
+#   Provides:    optional. What the role's output feeds the engine. "Provides: topics" means the engine
+#                parses the reply (artifact, one topic per line) into the session's topic list.
+#   Skills:      optional. A comma-separated list of skill names the role may apply (e.g. "Skills:
+#                mathematics"). The engine injects a skill's guidance into this role's system prompt ONLY
+#                when the run's identified topics include the skill (the skill name matches a topic), so a
+#                role gets domain knowledge exactly when the subject calls for it. See SkillRegistry.
 #   Transition:  how to choose the next role from the model's "decision"
 #
 # At each step the engine sends Action to llama-server as the system prompt, together with the
@@ -35,7 +41,35 @@
 # model's decision matches none of the labeled rules. Provide one so an unexpected decision advances the
 # workflow instead of ending the run.
 
-1. SignalOrRequest
+1. TopicAnalyzer
+Role: Topic identifier
+Action:
+  Identify the topics relevant to the user's prompt — areas of knowledge that affect how the prompt
+  should be interpreted (for example mathematics, science, sports, or programming). Most requests to
+  build software involve programming and may involve another subject area too.
+  List AT MOST 3 topics unless more are highly relevant. If the prompt is very general, there may be no
+  relevant topics at all.
+  Put the topics in "artifact", ONE PER LINE, each just the topic name (e.g. "mathematics"). Put a short
+  human-readable list of the topics in "message".
+  If you listed one or more topics, set "decision" to "topics". If there are none, set "decision" to
+  "none".
+Output: none
+Provides: topics
+Transition: topics -> TopicContextBuilder, none -> SignalOrRequest, SignalOrRequest
+
+2. TopicContextBuilder
+Role: Information retrieval
+Action:
+  For EACH topic identified by TopicAnalyzer, gather basic background details — including the topic's
+  concerns and special interests — so the prompt is interpreted correctly. This role is computed
+  deterministically by the engine (it does not call the model): the engine runs the web_search tool once
+  per identified topic, so no topic is ever missed, combines the results, and records them in the audit
+  trail. The combined context is then reused by later roles (e.g. PlanReviewer). See TopicResearcher.
+Output: none
+Compute: build-topic-context
+Transition: SignalOrRequest
+
+3. SignalOrRequest
 Role: Classifier
 Action:
   Classify the user's prompt as either a "signal" or a "request".
@@ -47,7 +81,7 @@ Action:
 Output: none
 Transition: signal -> SignalResponse, request -> HandleRequest
 
-2. SignalResponse
+4. SignalResponse
 Role: Responder
 Action:
   The prompt was classified as a signal, so no task needs to be planned.
@@ -57,7 +91,7 @@ Action:
 Output: none
 Transition: done
 
-3. HandleRequest
+5. HandleRequest
 Role: Clarifier
 Action:
   Your job is to make the success criteria of the request unambiguous.
@@ -74,7 +108,7 @@ Action:
 Output: none
 Transition: clear -> GoalBuilder, unclear -> await, cancelled -> done
 
-4. GoalBuilder
+6. GoalBuilder
 Role: Goal author
 Action:
   Construct the GOAL: the criteria for when this request is satisfied.
@@ -86,7 +120,7 @@ Action:
 Output: goal
 Transition: PlanBuilder
 
-5. PlanBuilder
+7. PlanBuilder
 Role: Plan author
 Action:
   Build a high-level PLAN that will satisfy the goal shown in the artifacts context above.
@@ -118,9 +152,10 @@ Action:
   Put the full four-phase Markdown plan in "artifact". Put a one-line confirmation in "message".
   Set "decision" to "continue".
 Output: plan
+Skills: mathematics
 Transition: PlanReviewer
 
-6. PlanReviewer
+8. PlanReviewer
 Role: Plan reviewer
 Action:
   Review the PLAN shown under "--- plan ---" in the artifacts context above (NOT the goal).
@@ -132,14 +167,15 @@ Action:
   Phase 1 MUST also call out the assumptions and decision points implied by the request (for example, the
   programming language when an application is requested) — either making them ("Assumption: ...",
   "Decision: ...") or adding steps to figure them out.
-  You are also given a "Web context about the topic" section (from a web search). Use it to sanity-check
-  the plan against how the topic ACTUALLY works, and flag any step that reflects a misunderstanding. For
-  example, finding a counterexample to a mathematical conjecture is itself a complete, valid result — it
-  is NOT a defect to fix, retry, or "research further". A step that treats it that way is out of place.
+  You are also given a "Topic context" section (gathered from the web for each identified topic). Use it to
+  sanity-check the plan against how the topic ACTUALLY works, and flag any step that reflects a
+  misunderstanding. For example, finding a counterexample to a mathematical conjecture is itself a complete,
+  valid result — it is NOT a defect to fix, retry, or "research further". A step that treats it that way is
+  out of place.
   Decide:
   - If any of the four phase headers is missing, a phase has no concrete step, Phase 1 does not call out
     the assumptions and decision points, the plan merely restates the goal (e.g. it contains a "# Goal"
-    heading), or a step is out of place / contradicts the topic's web context, then the plan is WRONG.
+    heading), or a step is out of place / contradicts the topic context, then the plan is WRONG.
     Set "decision" to "change", rewrite the FULL corrected plan into "artifact" (removing or fixing the
     out-of-place steps and adding any missing assumptions/decisions to Phase 1), and put a one-sentence
     justification in "message".
@@ -151,7 +187,7 @@ Output: plan conditional
 Research: topic
 Transition: change -> PlanReviewer, ok -> StepReviewer, StepReviewer
 
-7. StepReviewer
+9. StepReviewer
 Role: Step reviewer
 Action:
   Classify every step of the plan as exactly one of "decision-point" (an assumption or a choice that must
@@ -162,7 +198,7 @@ Output: none
 Compute: classify-steps
 Transition: ResponseBuilder
 
-8. ResponseBuilder
+10. ResponseBuilder
 Role: Final responder
 Action:
   Tell the user, in one or two sentences, that their request has been turned into a goal and a plan

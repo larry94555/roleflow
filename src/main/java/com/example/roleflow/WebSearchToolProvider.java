@@ -22,8 +22,9 @@ import java.util.Map;
 /**
  * The {@code web_search} tool — the key tool for resolving requests for information. It searches the web
  * through DuckDuckGo's no-API-key endpoints: the full {@code html.duckduckgo.com} page first, then the
- * lighter {@code lite.duckduckgo.com} page as a fallback. Results are returned as a JSON document
- * ({@code query}, {@code provider}, {@code results[]} of {rank,title,url,snippet}, and provider notes).
+ * lighter {@code lite.duckduckgo.com} page as a fallback. Both are queried with an HTTP {@code POST} (a
+ * plain GET now returns an HTTP 202 anti-bot challenge page with no results). Results are returned as a JSON
+ * document ({@code query}, {@code provider}, {@code results[]} of {rank,title,url,snippet}, and provider notes).
  *
  * <p>The network call is behind an injectable {@link HtmlFetcher} so the parsing and orchestration can be
  * unit-tested offline. Modeled on goalmaker's web search provider, simplified for a first tool.
@@ -158,15 +159,23 @@ public class WebSearchToolProvider implements ToolProvider {
                 .build();
         int limit = Math.max(1, maxResponseBytes);
         return url -> {
-            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+            // DuckDuckGo's HTML endpoints now answer a GET with an HTTP 202 anti-bot challenge page (no
+            // results); a POST with the query as a form body returns the real HTTP 200 results page. The
+            // query is already form-encoded in the URL's query string, so split it off and send it as body.
+            int mark = url.indexOf('?');
+            String target = mark >= 0 ? url.substring(0, mark) : url;
+            String body = mark >= 0 ? url.substring(mark + 1) : "";
+            HttpRequest request = HttpRequest.newBuilder(URI.create(target))
                     .header("User-Agent",
                             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) roleflow/0.1 web_search")
                     .header("Accept", "text/html")
+                    .header("Content-Type", "application/x-www-form-urlencoded")
                     .timeout(Duration.ofSeconds(Math.max(1, timeoutSeconds)))
-                    .GET()
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                     .build();
             HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            if (response.statusCode() / 100 != 2) {
+            // Require 200 specifically: a 202 is DuckDuckGo's challenge page, not a results page.
+            if (response.statusCode() != 200) {
                 throw new IllegalStateException("HTTP " + response.statusCode());
             }
             try (InputStream stream = response.body()) {

@@ -20,14 +20,23 @@ import java.util.List;
  * @param compute         the name of an engine built-in that produces this role's result deterministically
  *                        instead of calling the model (e.g. {@code "classify-steps"}), or null for a normal
  *                        model-driven role.
- * @param researchesTopic whether the engine should fetch general web context about the request's topic and
- *                        include it in this role's system prompt (e.g. so a reviewer can sanity-check a
- *                        plan against how the topic actually works).
+ * @param researchesTopic whether the engine should include the run's topic context (gathered by the
+ *                        TopicContextBuilder role) in this role's system prompt.
+ * @param provides        what downstream artifact this role's output feeds the engine, e.g. {@code "topics"}
+ *                        means the engine parses the reply into the session's topic list; null for none.
+ * @param skills          the names of the skills this role may apply; each is injected into the role's system
+ *                        prompt when the run's topics include the skill (see {@link SkillRegistry}).
  * @param transitions     ordered decision-to-target rules
  */
 public record Role(int number, String name, String title, String action, String outputKind,
                    boolean outputMandatory, boolean readsArtifacts, String compute,
-                   boolean researchesTopic, List<Transition> transitions) {
+                   boolean researchesTopic, String provides, List<String> skills,
+                   List<Transition> transitions) {
+
+    /** True when this role's output is parsed into the session's list of topics. */
+    public boolean providesTopics() {
+        return "topics".equalsIgnoreCase(provides);
+    }
 
     /** True when this role is computed deterministically by the engine rather than by the model. */
     public boolean isComputed() {

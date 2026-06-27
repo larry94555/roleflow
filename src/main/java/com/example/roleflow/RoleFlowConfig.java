@@ -26,7 +26,7 @@ public class RoleFlowConfig {
 
     private static final Pattern ROLE_HEADER = Pattern.compile("^\\s*(\\d+)\\.\\s+([A-Za-z][\\w-]*)\\s*$");
     private static final Pattern FIELD_HEADER =
-            Pattern.compile("^\\s*(Role|Action|Output|Reads|Compute|Research|Transition)\\s*:(.*)$");
+            Pattern.compile("^\\s*(Role|Action|Output|Reads|Compute|Research|Provides|Skills|Transition)\\s*:(.*)$");
 
     private final List<Role> roles;
     private final Map<String, Role> byName;
@@ -125,13 +125,31 @@ public class RoleFlowConfig {
         String compute = value(fields, "compute").trim();
         if (compute.isBlank() || "none".equalsIgnoreCase(compute)) compute = null;
 
-        // Research field: present and non-blank (and not "none") means fetch web context for the topic.
+        // Research field: present and non-blank (and not "none") means include the run's topic context.
         String research = value(fields, "research").trim();
         boolean researchesTopic = !research.isBlank() && !"none".equalsIgnoreCase(research);
 
+        // Provides field: what the role's output feeds the engine (e.g. "topics").
+        String provides = value(fields, "provides").trim();
+        if (provides.isBlank() || "none".equalsIgnoreCase(provides)) provides = null;
+
+        // Skills field: comma/space-separated names of skills the role may apply (e.g. "mathematics").
+        List<String> skills = parseSkills(value(fields, "skills"));
+
         List<Role.Transition> transitions = parseTransitions(value(fields, "transition"));
         result.add(new Role(number, name, title, action, outputKind, outputMandatory, readsArtifacts,
-                compute, researchesTopic, transitions));
+                compute, researchesTopic, provides, skills, transitions));
+    }
+
+    /** Parses a comma/semicolon/whitespace-separated list of skill names, dropping blanks and "none". */
+    private static List<String> parseSkills(String text) {
+        if (text == null || text.isBlank()) return List.of();
+        List<String> skills = new ArrayList<>();
+        for (String part : text.split("[,;\\s]+")) {
+            String name = part.trim();
+            if (!name.isEmpty() && !"none".equalsIgnoreCase(name)) skills.add(name);
+        }
+        return List.copyOf(skills);
     }
 
     private static List<Role.Transition> parseTransitions(String text) {

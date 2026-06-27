@@ -113,20 +113,36 @@ class RoleFlowConfigTest {
     }
 
     @Test
-    void shippedActiveConfigParsesIntoEightRoles() throws Exception {
+    void shippedActiveConfigParsesIntoTenRoles() throws Exception {
         Path path = Path.of("config/roleflow.active");
         RoleFlowConfig config = new RoleFlowConfig(RoleFlowConfig.parse(Files.readString(path)));
         List<Role> roles = config.roles();
 
-        assertEquals(8, roles.size(), "the shipped workflow should define eight roles");
-        assertEquals(List.of("SignalOrRequest", "SignalResponse", "HandleRequest", "GoalBuilder",
-                        "PlanBuilder", "PlanReviewer", "StepReviewer", "ResponseBuilder"),
+        assertEquals(10, roles.size(), "the shipped workflow should define ten roles");
+        assertEquals(List.of("TopicAnalyzer", "TopicContextBuilder", "SignalOrRequest", "SignalResponse",
+                        "HandleRequest", "GoalBuilder", "PlanBuilder", "PlanReviewer", "StepReviewer",
+                        "ResponseBuilder"),
                 roles.stream().map(Role::name).toList());
+        assertEquals("TopicAnalyzer", config.firstRole().name(), "the run starts by analysing topics");
+
+        // TopicAnalyzer provides topics; TopicContextBuilder gathers their context deterministically.
+        Role topicAnalyzer = config.byName("TopicAnalyzer");
+        assertTrue(topicAnalyzer.providesTopics());
+        assertEquals("TopicContextBuilder", topicAnalyzer.resolve("topics"));
+        assertEquals("SignalOrRequest", topicAnalyzer.resolve("none"));
+        assertEquals("SignalOrRequest", topicAnalyzer.resolve("anything-else"), "defaults forward");
+        assertTrue(config.byName("TopicContextBuilder").isComputed());
+        assertEquals("build-topic-context", config.byName("TopicContextBuilder").compute());
+        assertEquals("SignalOrRequest", config.byName("TopicContextBuilder").resolve("continue"));
 
         // Goal/plan are the mandatory artifact-producing steps.
         assertEquals("goal", config.byName("GoalBuilder").outputKind());
         assertTrue(config.byName("GoalBuilder").outputMandatory());
         assertEquals("plan", config.byName("PlanBuilder").outputKind());
+
+        // PlanBuilder applies the mathematics skill (gated on the mathematics topic by the engine).
+        assertEquals(List.of("mathematics"), config.byName("PlanBuilder").skills());
+        assertTrue(config.byName("GoalBuilder").skills().isEmpty(), "GoalBuilder declares no skills");
 
         // PlanReviewer writes the plan only conditionally; StepReviewer writes nothing.
         Role planReviewer = config.byName("PlanReviewer");

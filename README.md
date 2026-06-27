@@ -32,7 +32,9 @@ The application does exactly these things and nothing more:
 - drives each prompt through the role workflow in `roleflow.active`,
 - records an audit trail of every role step (log file + live web page),
 - exposes an internal **tool registry** (MCP) with a `web_search` tool — see
-  [Tool registry](#tool-registry) and [Tool_Registry.md](Tool_Registry.md).
+  [Tool registry](#tool-registry) and [Tool_Registry.md](Tool_Registry.md),
+- exposes an internal **skill registry** that injects domain guidance (e.g. a `mathematics` skill) into a
+  role's prompt when the run's topics call for it — see [Skill_Registry.md](Skill_Registry.md).
 
 ---
 
@@ -203,29 +205,36 @@ of **roles** defined in [`config/roleflow.active`](config/roleflow.active). Each
 that wraps the (unchanging) user prompt so the model performs one job, then a **transition** decides which
 role runs next. The same workflow is used for both terminal and web prompts.
 
-The shipped workflow has eight roles:
+The shipped workflow has ten roles:
 
-1. **SignalOrRequest** — classify the prompt as a *signal* (e.g. "Hello", "Thanks") or a *request*.
-2. **SignalResponse** — for a signal: acknowledge or reply. *(ends here — no files)*
-3. **HandleRequest** — for a request: make the success criteria clear, asking clarifying questions if
+1. **TopicAnalyzer** — identify the **topics** relevant to the prompt (e.g. mathematics, programming),
+   at most three, or none for a very general prompt. The topics are recorded in the **audit trail** and
+   surfaced in the final response.
+2. **TopicContextBuilder** — for **every** identified topic, gather background details (its concerns and
+   special interests) by running the `web_search` tool **once per topic**, so no topic is missed. This
+   step is computed deterministically in code (no model call); the combined context is reused by later
+   roles and each search is recorded in the **audit trail**. *(Skipped when there are no topics.)*
+3. **SignalOrRequest** — classify the prompt as a *signal* (e.g. "Hello", "Thanks") or a *request*.
+4. **SignalResponse** — for a signal: acknowledge or reply. *(ends here — no files)*
+5. **HandleRequest** — for a request: make the success criteria clear, asking clarifying questions if
    needed (and pausing for your answer), or noting a cancellation.
-4. **GoalBuilder** — write the **goal** (the criteria for success) to a file in `goals/`.
-5. **PlanBuilder** — write a four-phase **plan** (Preparation, Action, Verification, Next steps) to a
+6. **GoalBuilder** — write the **goal** (the criteria for success) to a file in `goals/`.
+7. **PlanBuilder** — write a four-phase **plan** (Preparation, Action, Verification, Next steps) to a
    file in `goals/`. Phase 1 must call out the **assumptions and decision points** the request implies
    (e.g. the programming language for an app) — making them or adding steps to figure them out.
-6. **PlanReviewer** — review the plan, using **web context** about the topic (via the `web_search` tool)
+8. **PlanReviewer** — review the plan, using the **topic context** gathered by TopicContextBuilder
    to flag steps that contradict how the topic actually works; if a change is warranted it rewrites the
    plan file and re-reviews, otherwise it confirms no change. Its verdict is recorded in the **audit
    trail**.
-7. **StepReviewer** — classify every step as *decision-point*, *request-for-information*, *action*, or
+9. **StepReviewer** — classify every step as *decision-point*, *request-for-information*, *action*, or
    *subgoal*, and record the classifications in the **audit trail**. This step is computed deterministically
    in code (no model call).
-8. **ResponseBuilder** — confirm the goal and plan were created; the engine then appends the exact file
-   locations as `file:///` URLs you can open from a browser.
+10. **ResponseBuilder** — confirm the goal and plan were created; the engine then appends the exact file
+    locations as `file:///` URLs you can open from a browser.
 
-So a single prompt produces **multiple `llama-server` calls — at least one per role.** A signal takes two
-calls and writes nothing; a request runs through all the roles and writes a **goal file** and a **plan
-file**. If a request is ambiguous, the Clarifier asks a question and waits; your next prompt answers it
+So a single prompt produces **multiple `llama-server` calls — at least one per non-computed role.** A
+signal is analysed for topics and then takes two more calls and writes nothing; a request runs through all
+the roles and writes a **goal file** and a **plan file**. If a request is ambiguous, the Clarifier asks a question and waits; your next prompt answers it
 and the flow resumes. Because every role call goes through the shared conversation memory, clarifying
 questions and answers accumulate as context without disrupting the flow.
 

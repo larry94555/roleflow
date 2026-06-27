@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -40,18 +41,21 @@ public class RoleFlowEngine {
     private final SessionLabeler labeler;
     private final AuditService audit;
     private final TopicResearcher researcher;
+    private final SkillRegistry skills;
     private final ObjectMapper mapper;
     private final int maxSteps;
 
     public RoleFlowEngine(RoleFlowConfig config, RoleFlowSession session, GoalFileWriter writer,
                           SessionLabeler labeler, AuditService audit, TopicResearcher researcher,
-                          ObjectMapper mapper, @Value("${roleflow.max-steps:20}") int maxSteps) {
+                          SkillRegistry skills, ObjectMapper mapper,
+                          @Value("${roleflow.max-steps:20}") int maxSteps) {
         this.config = config;
         this.session = session;
         this.writer = writer;
         this.labeler = labeler;
         this.audit = audit;
         this.researcher = researcher;
+        this.skills = skills;
         this.mapper = mapper;
         this.maxSteps = Math.max(1, maxSteps);
     }
@@ -85,17 +89,38 @@ public class RoleFlowEngine {
             }
 
             audit.roleStarted(runId, role.name());
+            // Record which of the role's declared skills apply to this run, so the use of a skill is visible
+            // in the audit trail alongside the topics that triggered it.
+            List<Skill> applied = applicableSkills(role);
+            if (!applied.isEmpty()) {
+                List<String> names = applied.stream().map(Skill::name).toList();
+                audit.validation(runId, role.name(), "applied skill(s): " + String.join(", ", names));
+            }
             // A computed role (e.g. step classification) is produced deterministically in code; otherwise
             // call the model — and for a plan-producing role enforce the fixed four-phase structure.
             RoleOutcome outcome = role.isComputed()
                     ? computeRole(role, runId)
-                    : invokeRole(role, buildSystemPrompt(role, systemOverride) + webContext(role, runId),
+                    : invokeRole(role, buildSystemPrompt(role, systemOverride) + topicContextSection(role),
                             userPrompt, maxTokens, temperature, model, runId);
             String raw = outcome.raw();
             RoleFlowReply reply = outcome.reply();
             lastMessage = reply.message().isBlank() ? raw.trim() : reply.message();
             // Record the role's human-readable result so reviewer findings are visible in the audit trail.
             audit.roleResult(runId, role.name(), lastMessage, reply.decision());
+
+            // A role that provides topics (TopicAnalyzer) feeds its reply into the session's topic list so
+            // the TopicContextBuilder can gather context for every one of them. The model is told to put the
+            // topics in "artifact" (one per line); a "none" decision means there are none, so the human
+            // "message" is never mistaken for a topic.
+            if (role.providesTopics()) {
+                List<String> topics = "none".equalsIgnoreCase(reply.decision())
+                        ? List.of()
+                        : TopicList.parse(reply.artifact().isBlank() ? reply.message() : reply.artifact());
+                session.setTopics(topics);
+                audit.validation(runId, role.name(), topics.isEmpty()
+                        ? "no relevant topics identified"
+                        : "identified topics: " + String.join(", ", topics));
+            }
 
             if (role.hasOutput()) {
                 // Only write when there is content AND it actually differs from what is already on file,
@@ -175,6 +200,17 @@ public class RoleFlowEngine {
             // Only plan artifacts have a fixed structure to enforce.
             boolean validatePlan = "plan".equalsIgnoreCase(role.outputKind()) && !artifact.isBlank();
             List<String> problems = validatePlan ? PlanValidator.problems(artifact) : List.of();
+            // Before re-prompting, try to coerce a structurally-wrong plan into the canonical four phases
+            // (the model often uses "# Phase 1"/"## Assumption:" instead of "## Phase 1 - Preparation"/"- ").
+            if (validatePlan && !problems.isEmpty()) {
+                String normalized = PlanNormalizer.normalize(artifact);
+                if (PlanValidator.isValid(normalized)) {
+                    artifact = normalized;
+                    problems = List.of();
+                    audit.validation(runId, role.name(),
+                            "plan normalized into the canonical four-phase structure");
+                }
+            }
             if (problems.isEmpty()) {
                 if (validatePlan) audit.validation(runId, role.name(), "plan structure is valid");
                 return new RoleOutcome(raw, reply, artifact);
@@ -213,6 +249,8 @@ public class RoleFlowEngine {
                 text = builder.toString();
             }
             audit.validation(runId, role.name(), "classified " + steps.size() + " step(s) deterministically");
+        } else if ("build-topic-context".equalsIgnoreCase(role.compute())) {
+            text = buildTopicContext(role, runId);
         } else {
             text = "No engine built-in named '" + role.compute() + "'.";
         }
@@ -220,26 +258,86 @@ public class RoleFlowEngine {
     }
 
     /**
-     * For a role that researches the topic, returns a "Web context about the topic" section to append to
-     * its system prompt. The web search runs at most once per run (cached on the session); the result is
-     * recorded in the audit so the reviewer's source material is visible.
+     * Deterministically gathers web context for EVERY topic identified by TopicAnalyzer (so no topic is
+     * missed), combines it, and caches it on the session for downstream roles. Records the search of each
+     * topic in the audit trail.
      */
-    private String webContext(Role role, String runId) {
-        if (researcher == null || !role.researchesTopic()) {
+    private String buildTopicContext(Role role, String runId) {
+        List<String> topics = session.topics();
+        if (topics.isEmpty()) {
+            session.setWebContext("");
+            return "No topics were identified, so no topic context was gathered.";
+        }
+        StringBuilder combined = new StringBuilder();
+        for (String topic : topics) {
+            String context = researcher == null ? "(web research is unavailable)" : researcher.context(topic);
+            String details = context == null || context.isBlank() ? "(no details found)" : context;
+            combined.append("## Topic: ").append(topic).append('\n').append(details).append("\n\n");
+            // Record the actual details gathered (not just the topic name) so the audit trail shows what
+            // was retrieved for each topic.
+            audit.validation(runId, role.name(),
+                    "gathered web context for topic '" + topic + "':\n" + details);
+        }
+        session.setWebContext(combined.toString().strip());
+        return "Gathered context for " + topics.size() + " topic(s): " + String.join(", ", topics);
+    }
+
+    /**
+     * For a role that requests the run's topic context, returns a section to append to its system prompt.
+     * The context is gathered up front by the TopicContextBuilder role (one web search per identified
+     * topic); this method only injects what was already gathered — it performs no search of its own.
+     */
+    private String topicContextSection(Role role) {
+        if (!role.researchesTopic()) {
             return "";
         }
         String context = session.webContext();
-        if (context == null) {
-            context = researcher.context(session.topicPrompt());
-            session.setWebContext(context == null ? "" : context);
-            audit.validation(runId, role.name(), "fetched web context for the topic:\n"
-                    + (context == null || context.isBlank() ? "(none)" : context));
-        }
-        if (context.isBlank()) {
+        if (context == null || context.isBlank()) {
             return "";
         }
-        return "\n\nWeb context about the topic (general reference — use it to sanity-check the plan and "
-                + "flag or fix any step that contradicts how the topic actually works):\n" + context;
+        return "\n\nTopic context (general background gathered from the web — use it to interpret the prompt "
+                + "correctly and to flag or fix any step that contradicts how the topic actually works):\n"
+                + context;
+    }
+
+    /**
+     * Returns the guidance for the skills a role declares that are RELEVANT to this run. A skill is relevant
+     * when the run's identified topics include the skill's name (e.g. the {@code mathematics} skill applies
+     * only when "mathematics" is an identified topic), so a role's domain knowledge is injected exactly when
+     * the subject calls for it. Returns "" when the role declares no skills, none are registered, or none of
+     * them match the run's topics.
+     */
+    private String skillsSection(Role role) {
+        List<Skill> applied = applicableSkills(role);
+        if (applied.isEmpty()) {
+            return "";
+        }
+        StringBuilder section = new StringBuilder();
+        for (Skill skill : applied) {
+            section.append("### Skill: ").append(skill.name()).append('\n')
+                    .append(skill.instructions()).append("\n\n");
+        }
+        return ("Apply the following skill guidance while performing this step:\n\n" + section).strip();
+    }
+
+    /**
+     * The registered skills a role declares that are RELEVANT to this run — i.e. whose name matches one of
+     * the run's identified topics. Returns an empty list when the role declares no skills, none are
+     * registered, or none match the run's topics.
+     */
+    private List<Skill> applicableSkills(Role role) {
+        if (skills == null || role.skills().isEmpty()) {
+            return List.of();
+        }
+        List<String> topics = session.topics();
+        List<Skill> applied = new ArrayList<>();
+        for (String skillName : role.skills()) {
+            Skill skill = skills.get(skillName);
+            if (skill != null && topics.stream().anyMatch(topic -> topic.equalsIgnoreCase(skill.name()))) {
+                applied.add(skill);
+            }
+        }
+        return applied;
     }
 
     /** The artifact a role intends to write: its {@code artifact}, or its message for a mandatory role. */
@@ -267,9 +365,18 @@ public class RoleFlowEngine {
      * read the artifacts before {@link RoleFlowSession#reset()} clears them.
      */
     private String complete(String lastMessage) {
-        String message = withArtifactLinks(lastMessage);
+        String message = withTopics(withArtifactLinks(lastMessage));
         session.reset();
         return message;
+    }
+
+    /** Appends the topics identified for the run to the final response, so the user sees them. */
+    private String withTopics(String message) {
+        List<String> topics = session.topics();
+        if (topics.isEmpty()) {
+            return message;
+        }
+        return (message == null ? "" : message) + "\n\nTopics considered: " + String.join(", ", topics);
     }
 
     private String withArtifactLinks(String message) {
@@ -301,6 +408,10 @@ public class RoleFlowEngine {
         }
         prompt.append("\n\n");
         prompt.append("Task for this step:\n").append(role.action()).append("\n\n");
+        String skillGuidance = skillsSection(role);
+        if (!skillGuidance.isBlank()) {
+            prompt.append(skillGuidance).append("\n\n");
+        }
         prompt.append("Allowed values for \"decision\": ")
                 .append(String.join(", ", role.allowedDecisions())).append("\n");
         if (role.hasOutput()) {

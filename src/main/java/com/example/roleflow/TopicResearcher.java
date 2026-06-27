@@ -44,8 +44,20 @@ public class TopicResearcher {
         if (query.length() > MAX_QUERY_LENGTH) query = query.substring(0, MAX_QUERY_LENGTH);
         try {
             String json = tools.call("web_search", Map.of("query", query, "max_results", maxResults));
-            JsonNode results = mapper.readTree(json).path("results");
+            JsonNode root = mapper.readTree(json);
+            JsonNode results = root.path("results");
             if (!results.isArray() || results.isEmpty()) {
+                // Surface the provider's notes (e.g. "duckduckgo-html: HTTP 202") so an empty result is
+                // diagnosable in the audit trail rather than a silent blank.
+                JsonNode notes = root.path("notes");
+                if (notes.isArray() && !notes.isEmpty()) {
+                    StringBuilder reason = new StringBuilder("(No web results were found for the topic. ");
+                    for (int i = 0; i < notes.size(); i++) {
+                        if (i > 0) reason.append("; ");
+                        reason.append(notes.get(i).asText(""));
+                    }
+                    return reason.append(")").toString();
+                }
                 return "(No web results were found for the topic.)";
             }
             StringBuilder context = new StringBuilder();

@@ -101,6 +101,19 @@ class WebSearchToolProviderTest {
     }
 
     @Test
+    void passesTheEncodedQueryInTheUrlSoTheFetcherCanPostItAsAFormBody() {
+        // The default fetcher POSTs the URL's query string as the form body, so the URL handed to the
+        // fetcher must carry the encoded query (e.g. "q=Legendre+conjecture") after a "?".
+        java.util.concurrent.atomic.AtomicReference<String> seenUrl = new java.util.concurrent.atomic.AtomicReference<>();
+        WebSearchToolProvider provider = provider(url -> { seenUrl.set(url); return HTML_ONE; });
+
+        provider.searchPayload(Map.of("query", "Legendre conjecture"));
+
+        assertTrue(seenUrl.get().startsWith("https://html.test/?"), seenUrl.get());
+        assertTrue(seenUrl.get().contains("q=Legendre"), seenUrl.get());
+    }
+
+    @Test
     void executeReturnsJson() throws Exception {
         WebSearchToolProvider provider = provider(url -> HTML_ONE);
 

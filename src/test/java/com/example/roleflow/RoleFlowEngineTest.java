@@ -43,6 +43,9 @@ class RoleFlowEngineTest {
             promptsSeen.add(userPrompt);
             Deque<String> queue = repliesByRole.get(role);
             if (queue == null || queue.isEmpty()) {
+                // Default: TopicAnalyzer finds no topics unless a test scripts it otherwise, so flow tests
+                // proceed straight to SignalOrRequest without having to script the topic step.
+                if ("TopicAnalyzer".equals(role)) return json("none", "no relevant topics");
                 throw new IllegalStateException("no scripted reply for role " + role);
             }
             return queue.poll();
@@ -86,6 +89,7 @@ class RoleFlowEngineTest {
     private GoalFileWriter writer;
     private SessionLabeler labeler;
     private AuditService audit;
+    private SkillRegistry skills;
     private RoleFlowEngine engine;
 
     @BeforeEach
@@ -95,8 +99,9 @@ class RoleFlowEngineTest {
         writer = new GoalFileWriter(goalsDir);
         labeler = new SessionLabeler(goalsDir.toString());
         audit = new AuditService(50);
+        skills = new SkillRegistry(List.of(new MathematicsSkillProvider()));
         // No TopicResearcher by default; the dedicated web-context test supplies one.
-        engine = new RoleFlowEngine(config, session, writer, labeler, audit, null, new ObjectMapper(), 20);
+        engine = new RoleFlowEngine(config, session, writer, labeler, audit, null, skills, new ObjectMapper(), 20);
         this.goalsDir = goalsDir;
     }
 
@@ -118,7 +123,7 @@ class RoleFlowEngineTest {
         String result = engine.run("Hello", null, null, null, model, null, "test");
 
         assertEquals("Hello to you too!", result);
-        assertEquals(List.of("SignalOrRequest", "SignalResponse"), model.rolesInvoked);
+        assertEquals(List.of("TopicAnalyzer", "SignalOrRequest", "SignalResponse"), model.rolesInvoked);
         assertTrue(session.isIdle(), "the run should complete and reset");
         assertEquals(0, fileCount(), "a signal must not create any files");
     }
@@ -149,8 +154,8 @@ class RoleFlowEngineTest {
                 "goal file name should include the prompt-derived prefix");
 
         // StepReviewer is computed by the engine, so it makes no model call (not in rolesInvoked).
-        assertEquals(List.of("SignalOrRequest", "HandleRequest", "GoalBuilder", "PlanBuilder",
-                "PlanReviewer", "ResponseBuilder"), model.rolesInvoked);
+        assertEquals(List.of("TopicAnalyzer", "SignalOrRequest", "HandleRequest", "GoalBuilder",
+                "PlanBuilder", "PlanReviewer", "ResponseBuilder"), model.rolesInvoked);
         // The user prompt is unchanged across the whole auto-advancing run.
         assertTrue(model.promptsSeen.stream().allMatch("Build me a report"::equals));
         assertTrue(session.isIdle());
@@ -179,6 +184,42 @@ class RoleFlowEngineTest {
         assertEquals(VALID_PLAN_TEXT, Files.readString(findFile("plan_")));
         // Both files are reported in the completed run.
         assertTrue(result.contains("Goal file: file:") && result.contains("Plan file: file:"), result);
+    }
+
+    @Test
+    void recoversAndNormalizesAPlanFromDuplicateKeyJsonWithLoosePhaseFormatting() throws Exception {
+        // Reproduces a real 3B failure on the Legendre prompt: the model emitted the plan in the FIRST
+        // "artifact" but appended an empty duplicate ("artifact":""), and styled the plan as "# Phase 1"
+        // headers with "## Assumption:" sub-headings. The reply parser must keep the first artifact and the
+        // engine must normalize it into the canonical four-phase structure instead of writing the prose
+        // "message" paragraph.
+        String loosePlan = "# Phase 1\\n## Assumption: A language is needed.\\n## Decision: Use Python.\\n"
+                + "# Phase 2\\n## Action: Install Python.\\n"
+                + "# Phase 3\\n## Confirmation: Run it.\\n"
+                + "# Phase 4\\n## Follow-Up: Document results.";
+        String duplicateKeyReply = "{\"message\":\"The high-level plan is outlined. Python will be used.\","
+                + "\"decision\":\"continue\",\"artifact\":\"" + loosePlan + "\","
+                + "\"decision\":\"continue\",\"artifact\":\"\"}";
+
+        ScriptedModel model = new ScriptedModel()
+                .on("SignalOrRequest", json("request", "This is a request"))
+                .on("HandleRequest", json("clear", "Criteria"))
+                .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
+                .on("PlanBuilder", duplicateKeyReply)
+                .on("PlanReviewer", json("ok", "Plan reviewed; no changes needed."))
+                .on("ResponseBuilder", json("done", "All done."));
+
+        engine.run("Search the first 10000 integers for a counterexample to Legendre's conjecture",
+                null, null, null, model, null, "test");
+
+        String plan = Files.readString(findFile("plan_"));
+        // The written plan is the canonical four-phase structure, NOT the prose message.
+        assertTrue(PlanValidator.isValid(plan), () -> "written plan must be valid but was:\n" + plan);
+        assertTrue(plan.contains("## Phase 1 - Preparation"), plan);
+        assertTrue(plan.contains("- Assumption: A language is needed."), plan);
+        assertTrue(plan.contains("- Decision: Use Python."), plan);
+        assertFalse(plan.contains("high-level plan is outlined"), "the prose message must not be the plan");
+        assertFalse(plan.contains("# Phase 1\n"), "loose headers must be normalized away");
     }
 
     @Test
@@ -212,7 +253,7 @@ class RoleFlowEngineTest {
         // First prompt: classifier + clarifier, then pause waiting for the user.
         String question = engine.run("Make me a report", null, null, null, model, null, "test");
         assertEquals("What format do you want the report in?", question);
-        assertEquals(List.of("SignalOrRequest", "HandleRequest"), model.rolesInvoked);
+        assertEquals(List.of("TopicAnalyzer", "SignalOrRequest", "HandleRequest"), model.rolesInvoked);
         assertFalse(session.isIdle(), "should be paused mid-flow at the clarifier");
         assertEquals("HandleRequest", session.currentRole());
         assertEquals(0, fileCount(), "no files until the request is clarified");
@@ -234,7 +275,7 @@ class RoleFlowEngineTest {
         String result = engine.run("Actually never mind", null, null, null, model, null, "test");
 
         assertEquals("Okay, I've cancelled that.", result);
-        assertEquals(List.of("SignalOrRequest", "HandleRequest"), model.rolesInvoked);
+        assertEquals(List.of("TopicAnalyzer", "SignalOrRequest", "HandleRequest"), model.rolesInvoked);
         assertTrue(session.isIdle());
         assertEquals(0, fileCount());
     }
@@ -244,7 +285,7 @@ class RoleFlowEngineTest {
         RoleFlowConfig tiny = new RoleFlowConfig(RoleFlowConfig.parse(
                 "1. Start\nRole: x\nAction: do it\nTransition: go -> Ghost\n"));
         RoleFlowEngine tinyEngine = new RoleFlowEngine(
-                tiny, session, writer, labeler, audit, null, new ObjectMapper(), 20);
+                tiny, session, writer, labeler, audit, null, skills, new ObjectMapper(), 20);
         ScriptedModel model = new ScriptedModel().on("Start", json("go", "went nowhere"));
 
         String result = tinyEngine.run("hi", null, null, null, model, null, "test");
@@ -271,21 +312,23 @@ class RoleFlowEngineTest {
         assertTrue(view.completed(), "the run should be marked completed");
         List<AuditEvent> events = view.events();
 
-        // Each role is recorded with its prompt, system prompt, and response.
+        // Each role is recorded with its prompt, system prompt, and response. The first model role is
+        // TopicAnalyzer.
         AuditEvent firstRequest = events.stream()
                 .filter(e -> e.type() == AuditEvent.Type.MODEL_REQUEST)
                 .findFirst().orElseThrow();
-        assertEquals("SignalOrRequest", firstRequest.role());
+        assertEquals("TopicAnalyzer", firstRequest.role());
         assertEquals("Build me a report", firstRequest.userPrompt());
-        assertTrue(firstRequest.systemPrompt().contains("Current role: SignalOrRequest"),
+        assertTrue(firstRequest.systemPrompt().contains("Current role: TopicAnalyzer"),
                 "the system prompt used should be captured");
 
         assertTrue(hasType(events, AuditEvent.Type.RUN_STARTED));
-        // Seven roles run: classifier, clarifier, goal, plan, plan-review, step-review, response.
-        assertEquals(7, count(events, AuditEvent.Type.ROLE_STARTED), "one ROLE_STARTED per role");
-        // StepReviewer is computed, so it has no MODEL_RESPONSE — only the six model-driven roles do.
-        assertEquals(6, count(events, AuditEvent.Type.MODEL_RESPONSE));
-        assertEquals(7, count(events, AuditEvent.Type.ROLE_RESULT), "each role's result is recorded");
+        // Eight roles run (TopicAnalyzer found no topics, so TopicContextBuilder is skipped): topic,
+        // classifier, clarifier, goal, plan, plan-review, step-review, response.
+        assertEquals(8, count(events, AuditEvent.Type.ROLE_STARTED), "one ROLE_STARTED per role");
+        // StepReviewer is computed, so it has no MODEL_RESPONSE — only the seven model-driven roles do.
+        assertEquals(7, count(events, AuditEvent.Type.MODEL_RESPONSE));
+        assertEquals(8, count(events, AuditEvent.Type.ROLE_RESULT), "each role's result is recorded");
         // The transition handling is called out, including the final "-> done".
         assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
                 && e.transition().contains("request") && e.transition().contains("HandleRequest")));
@@ -463,8 +506,8 @@ class RoleFlowEngineTest {
         engine.run("Build me a report", null, null, null, model, "PID-fallback", "web");
 
         // StepReviewer is computed (no model call), so it is not in rolesInvoked.
-        assertEquals(List.of("SignalOrRequest", "HandleRequest", "GoalBuilder", "PlanBuilder",
-                "PlanReviewer", "ResponseBuilder"), model.rolesInvoked);
+        assertEquals(List.of("TopicAnalyzer", "SignalOrRequest", "HandleRequest", "GoalBuilder",
+                "PlanBuilder", "PlanReviewer", "ResponseBuilder"), model.rolesInvoked);
         assertTrue(session.isIdle(), "the run should complete only after ResponseBuilder");
         AuditView view = audit.viewByPrompt("PID-fallback");
         assertTrue(view.events().stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
@@ -503,18 +546,28 @@ class RoleFlowEngineTest {
                 && "StepReviewer".equals(e.role()) && e.detail().contains("classified")));
     }
 
-    @Test
-    void planReviewerReceivesWebContextForTheTopic() throws Exception {
-        String webJson = "{\"query\":\"q\",\"results\":[{\"rank\":1,\"title\":\"Legendre's conjecture\","
-                + "\"snippet\":\"A counterexample would disprove the conjecture; finding one is a complete "
-                + "result, not a defect to fix.\"}]}";
+    /** A web_search tool that records each query and returns a canned, topic-relevant snippet. */
+    private static RoleFlowEngine engineWithWebSearch(RoleFlowConfig config, RoleFlowSession session,
+            GoalFileWriter writer, SessionLabeler labeler, AuditService audit, List<String> queriesSeen) {
         ToolRegistry tools = new ToolRegistry(List.of(() -> List.of(new Tool(
-                "web_search", "search", Map.of("type", "object"), "test:web_search", args -> webJson))));
-        TopicResearcher researcher = new TopicResearcher(tools, new ObjectMapper(), 3);
-        RoleFlowEngine researchEngine = new RoleFlowEngine(
-                config, session, writer, labeler, audit, researcher, new ObjectMapper(), 20);
+                "web_search", "search", Map.of("type", "object"), "test:web_search", args -> {
+            if (queriesSeen != null) queriesSeen.add(String.valueOf(args.get("query")));
+            return "{\"results\":[{\"title\":\"" + args.get("query") + "\",\"snippet\":\"A counterexample "
+                    + "would disprove the conjecture; finding one is a complete result, not a defect.\"}]}";
+        }))));
+        return new RoleFlowEngine(config, session, writer, labeler, audit,
+                new TopicResearcher(tools, new ObjectMapper(), 3),
+                new SkillRegistry(List.of(new MathematicsSkillProvider())), new ObjectMapper(), 20);
+    }
+
+    @Test
+    void topicContextBuilderSearchesEveryIdentifiedTopicAndPlanReviewerUsesIt() throws Exception {
+        List<String> queries = new ArrayList<>();
+        RoleFlowEngine researchEngine = engineWithWebSearch(config, session, writer, labeler, audit, queries);
 
         ScriptedModel model = new ScriptedModel()
+                .on("TopicAnalyzer", jsonWithArtifact("topics", "math, programming, Legendre",
+                        "mathematics\nprogramming\nLegendre's conjecture"))
                 .on("SignalOrRequest", json("request", "This is a request"))
                 .on("HandleRequest", json("clear", "Criteria"))
                 .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
@@ -522,22 +575,106 @@ class RoleFlowEngineTest {
                 .on("PlanReviewer", json("ok", "looks good"))
                 .on("ResponseBuilder", json("done", "Done."));
 
-        researchEngine.run("Search the first 10000 integers for a counterexample to Legendre's conjecture",
+        String result = researchEngine.run(
+                "Search the first 10000 integers for a counterexample to Legendre's conjecture",
                 null, null, null, model, "PID-web", "web");
 
-        // PlanReviewer's system prompt includes the web context fetched for the topic.
-        AuditEvent planReviewerRequest = audit.viewByPrompt("PID-web").events().stream()
+        // EVERY identified topic was searched, in order — no topic is missed.
+        assertEquals(List.of("mathematics", "programming", "Legendre's conjecture"), queries);
+
+        List<AuditEvent> events = audit.viewByPrompt("PID-web").events();
+        // TopicContextBuilder recorded gathering each topic, INCLUDING the details retrieved.
+        assertEquals(3, events.stream().filter(e -> e.type() == AuditEvent.Type.VALIDATION
+                && "TopicContextBuilder".equals(e.role())
+                && e.detail().contains("gathered web context")).count());
+        // The actual details (the canned snippet) are in the audit, not just the topic name.
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.VALIDATION
+                && "TopicContextBuilder".equals(e.role())
+                && e.detail().contains("gathered web context for topic 'mathematics'")
+                && e.detail().contains("A counterexample would disprove")),
+                "the gathered details for each topic must appear in the audit trail");
+
+        // PlanReviewer's prompt includes the gathered topic context.
+        AuditEvent planReviewerRequest = events.stream()
                 .filter(e -> e.type() == AuditEvent.Type.MODEL_REQUEST && "PlanReviewer".equals(e.role()))
                 .findFirst().orElseThrow();
-        assertTrue(planReviewerRequest.systemPrompt().contains("Web context about the topic"),
+        assertTrue(planReviewerRequest.systemPrompt().contains("Topic context"),
                 planReviewerRequest.systemPrompt());
         assertTrue(planReviewerRequest.systemPrompt().contains("A counterexample would disprove"),
                 planReviewerRequest.systemPrompt());
 
-        // The fetched context is also recorded in the audit for visibility.
-        assertTrue(audit.viewByPrompt("PID-web").events().stream()
-                .anyMatch(e -> e.type() == AuditEvent.Type.VALIDATION && "PlanReviewer".equals(e.role())
-                        && e.detail().contains("fetched web context")));
+        // The identified topics are surfaced in the final response.
+        assertTrue(result.contains("Topics considered: mathematics, programming, Legendre's conjecture"),
+                result);
+    }
+
+    @Test
+    void noTopicsSkipsContextBuildingAndAddsNoTopicsFooter() throws Exception {
+        List<String> queries = new ArrayList<>();
+        RoleFlowEngine researchEngine = engineWithWebSearch(config, session, writer, labeler, audit, queries);
+
+        // TopicAnalyzer (default in ScriptedModel) returns "none" → TopicContextBuilder is skipped.
+        ScriptedModel model = new ScriptedModel()
+                .on("SignalOrRequest", json("signal", "greeting"))
+                .on("SignalResponse", json("done", "Hello!"));
+
+        String result = researchEngine.run("hello", null, null, null, model, "PID-none", "web");
+
+        assertTrue(queries.isEmpty(), "no web searches when there are no topics");
+        assertFalse(model.rolesInvoked.contains("TopicContextBuilder"));
+        assertEquals("Hello!", result, "no 'Topics considered' footer when there are no topics");
+    }
+
+    @Test
+    void planBuilderAppliesTheMathematicsSkillWhenMathematicsIsAnIdentifiedTopic() throws Exception {
+        ScriptedModel model = new ScriptedModel()
+                .on("TopicAnalyzer", jsonWithArtifact("topics", "mathematics", "mathematics"))
+                .on("TopicContextBuilder", json("continue", "n/a")) // not invoked (computed), kept for clarity
+                .on("SignalOrRequest", json("request", "a request"))
+                .on("HandleRequest", json("clear", "Criteria"))
+                .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
+                .on("PlanBuilder", jsonWithArtifact("continue", "plan built", VALID_PLAN))
+                .on("PlanReviewer", json("ok", "no changes"))
+                .on("ResponseBuilder", json("done", "Done."));
+
+        engine.run("Search the first 10000 integers for a counterexample to Legendre's conjecture",
+                null, null, null, model, "PID-skill", "web");
+
+        List<AuditEvent> events = audit.viewByPrompt("PID-skill").events();
+        AuditEvent planBuilderRequest = events.stream()
+                .filter(e -> e.type() == AuditEvent.Type.MODEL_REQUEST && "PlanBuilder".equals(e.role()))
+                .findFirst().orElseThrow();
+        // The mathematics skill guidance is injected into PlanBuilder's system prompt.
+        assertTrue(planBuilderRequest.systemPrompt().contains("### Skill: mathematics"),
+                planBuilderRequest.systemPrompt());
+        assertTrue(planBuilderRequest.systemPrompt().contains("complete"), planBuilderRequest.systemPrompt());
+        // The use of the skill is recorded in the audit trail.
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.VALIDATION
+                && "PlanBuilder".equals(e.role()) && e.detail().contains("applied skill(s): mathematics")),
+                "the applied skill must appear in the audit trail");
+    }
+
+    @Test
+    void planBuilderDoesNotApplyTheMathematicsSkillForANonMathematicsRequest() throws Exception {
+        // Default TopicAnalyzer returns "none", so no topic matches the skill — it must not be injected.
+        ScriptedModel model = new ScriptedModel()
+                .on("SignalOrRequest", json("request", "a request"))
+                .on("HandleRequest", json("clear", "Criteria"))
+                .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
+                .on("PlanBuilder", jsonWithArtifact("continue", "plan built", VALID_PLAN))
+                .on("PlanReviewer", json("ok", "no changes"))
+                .on("ResponseBuilder", json("done", "Done."));
+
+        engine.run("Set up a weekly backup of my notes folder", null, null, null, model, "PID-noskill", "web");
+
+        List<AuditEvent> events = audit.viewByPrompt("PID-noskill").events();
+        AuditEvent planBuilderRequest = events.stream()
+                .filter(e -> e.type() == AuditEvent.Type.MODEL_REQUEST && "PlanBuilder".equals(e.role()))
+                .findFirst().orElseThrow();
+        assertFalse(planBuilderRequest.systemPrompt().contains("Skill: mathematics"),
+                "math skill must not be injected when mathematics is not a topic");
+        assertFalse(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.VALIDATION
+                && e.detail() != null && e.detail().contains("applied skill")));
     }
 
     @Test
