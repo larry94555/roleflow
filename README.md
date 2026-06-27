@@ -109,8 +109,8 @@ While the application is running, open:
 http://localhost:8080/
 ```
 
-Enter an optional **system prompt**, type your **prompt**, and click **Send** (or press **Ctrl+Enter**).
-The model's response appears below the button.
+Type your **prompt** and click **Send** (or press **Ctrl+Enter**). The model's response appears below, and
+each prompt is added to the conversation transcript on the page.
 
 When you click **Send**, a **"🔎 View audit trail for this prompt ↗"** link appears and the audit page
 opens in a new tab, so you can watch each role run live as the prompt is processed. See
@@ -203,7 +203,7 @@ of **roles** defined in [`config/roleflow.active`](config/roleflow.active). Each
 that wraps the (unchanging) user prompt so the model performs one job, then a **transition** decides which
 role runs next. The same workflow is used for both terminal and web prompts.
 
-The shipped workflow has six roles:
+The shipped workflow has eight roles:
 
 1. **SignalOrRequest** — classify the prompt as a *signal* (e.g. "Hello", "Thanks") or a *request*.
 2. **SignalResponse** — for a signal: acknowledge or reply. *(ends here — no files)*
@@ -211,8 +211,16 @@ The shipped workflow has six roles:
    needed (and pausing for your answer), or noting a cancellation.
 4. **GoalBuilder** — write the **goal** (the criteria for success) to a file in `goals/`.
 5. **PlanBuilder** — write a four-phase **plan** (Preparation, Action, Verification, Next steps) to a
-   file in `goals/`.
-6. **ResponseBuilder** — confirm the goal and plan were created; the engine then appends the exact file
+   file in `goals/`. Phase 1 must call out the **assumptions and decision points** the request implies
+   (e.g. the programming language for an app) — making them or adding steps to figure them out.
+6. **PlanReviewer** — review the plan, using **web context** about the topic (via the `web_search` tool)
+   to flag steps that contradict how the topic actually works; if a change is warranted it rewrites the
+   plan file and re-reviews, otherwise it confirms no change. Its verdict is recorded in the **audit
+   trail**.
+7. **StepReviewer** — classify every step as *decision-point*, *request-for-information*, *action*, or
+   *subgoal*, and record the classifications in the **audit trail**. This step is computed deterministically
+   in code (no model call).
+8. **ResponseBuilder** — confirm the goal and plan were created; the engine then appends the exact file
    locations as `file:///` URLs you can open from a browser.
 
 So a single prompt produces **multiple `llama-server` calls — at least one per role.** A signal takes two

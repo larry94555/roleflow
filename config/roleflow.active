@@ -5,7 +5,19 @@
 # Each role has a number, a name, and these fields:
 #   Role:        a short human label for the role
 #   Action:      the system prompt for this step (what the model should do)
-#   Output:      "none", or the kind of artifact this step writes to the goals/ directory
+#   Output:      "none", or the kind of artifact this step writes to the goals/ directory.
+#                Add "conditional" to write the file only when the model supplies an artifact
+#                (used by a reviewer that rewrites a file only when it recommends a change).
+#   Reads:       optional. When present (e.g. "Reads: plan"), the FULL content of the artifacts created so
+#                far is included in this role's system prompt. Output roles always get it; a non-output
+#                role that must analyse an artifact opts in with this field, while a pure reporting role
+#                (ResponseBuilder) omits it and is shown only the file locations.
+#   Compute:     optional. Names an engine built-in that produces the role's result DETERMINISTICALLY in
+#                code instead of calling the model (e.g. "Compute: classify-steps"). Used where the output
+#                format is fixed (StepReviewer classifies plan steps). No model call is made for the role.
+#   Research:    optional. When present (e.g. "Research: topic"), the engine runs a web search on the
+#                request's topic (via the web_search tool) and includes the results as a "Web context"
+#                section in this role's system prompt, so the role can sanity-check against real-world facts.
 #   Transition:  how to choose the next role from the model's "decision"
 #
 # At each step the engine sends Action to llama-server as the system prompt, together with the
@@ -14,9 +26,14 @@
 #
 #   {"message": "<text to show the user>", "decision": "<one allowed decision>", "artifact": "<file contents or empty>"}
 #
-# The engine reads "decision" and follows Transition to the next role. A transition target of
-# "done" (or a target that does not exist) ends the run. A transition back to the same role means
-# "ask the user and wait for their reply" (used for clarifying questions).
+# The engine reads "decision" and follows Transition to the next role. Special transition targets:
+#   - "done"  ends the run (as does a target that does not exist).
+#   - "await" returns the message to the user and waits for their next prompt, then resumes at the
+#             SAME role (used for clarifying questions).
+#   - the SAME role name re-runs that role automatically with no user input (used to re-review).
+# A transition entry with no "decision ->" prefix (a bare role name) is the DEFAULT, taken when the
+# model's decision matches none of the labeled rules. Provide one so an unexpected decision advances the
+# workflow instead of ending the run.
 
 1. SignalOrRequest
 Role: Classifier
@@ -55,7 +72,7 @@ Action:
   Put your restated criteria, or your clarifying question, or your acknowledgement in "message".
   Leave "artifact" empty.
 Output: none
-Transition: clear -> GoalBuilder, unclear -> HandleRequest, cancelled -> done
+Transition: clear -> GoalBuilder, unclear -> await, cancelled -> done
 
 4. GoalBuilder
 Role: Goal author
@@ -72,23 +89,84 @@ Transition: PlanBuilder
 5. PlanBuilder
 Role: Plan author
 Action:
-  Using the goal shown in the artifacts context above, construct a high-level PLAN with four
-  phases:
-    Phase 1 - Preparation: information to gather, tools to install, or constraints to resolve.
-    Phase 2 - Action: the actions, information requests, or target states needed.
-    Phase 3 - Verification: how to confirm the actions completed and the goal was met.
-    Phase 4 - Next steps: any follow-up, retry, or future check for an ongoing goal.
-  Write the plan as a clear, human-readable Markdown document and put the full document in
-  "artifact". Put a one-line confirmation that the plan was constructed in "message".
+  Build a high-level PLAN that will satisfy the goal shown in the artifacts context above.
+  Do NOT restate or copy the goal, and do NOT include a "# Goal" or "## Details" heading.
+  Put the plan in "artifact" as Markdown using EXACTLY these four phase headers, in this order:
+
+    ## Phase 1 - Preparation
+    ## Phase 2 - Action
+    ## Phase 3 - Verification
+    ## Phase 4 - Next steps
+
+  Under each header, write at least one concrete step as a bullet starting with "- ". A step is a
+  subgoal that, together with the others, satisfies the goal:
+    - Phase 1: the ASSUMPTIONS and DECISION POINTS implied by the request, plus information to gather,
+      tools to install, or constraints to resolve.
+    - Phase 2: the actions, information requests, or target states needed.
+    - Phase 3: how to confirm the actions completed and the goal was met.
+    - Phase 4: any follow-up, retry, or future check for an ongoing goal.
+
+  Phase 1 MUST identify the assumptions and decision points implied by the request. For example, when the
+  request is to write an application, the programming language is a decision point. For each one, either
+  make the decision now or, if it needs time or research, add a step to figure it out:
+    - State an assumption as a bullet starting "- Assumption: ...".
+    - Make a decision as a bullet starting "- Decision: ...".
+    - Or defer it as a step, e.g. "- Figure out which programming language to use".
+  Phase 1 must contain at least one "Assumption:" item and at least one "Decision:" item (or steps to
+  figure out the assumptions and to make the decisions).
+
+  Put the full four-phase Markdown plan in "artifact". Put a one-line confirmation in "message".
   Set "decision" to "continue".
 Output: plan
+Transition: PlanReviewer
+
+6. PlanReviewer
+Role: Plan reviewer
+Action:
+  Review the PLAN shown under "--- plan ---" in the artifacts context above (NOT the goal).
+  A correct plan MUST have all four phase headers, in order, each with at least one concrete step:
+    ## Phase 1 - Preparation
+    ## Phase 2 - Action
+    ## Phase 3 - Verification
+    ## Phase 4 - Next steps
+  Phase 1 MUST also call out the assumptions and decision points implied by the request (for example, the
+  programming language when an application is requested) — either making them ("Assumption: ...",
+  "Decision: ...") or adding steps to figure them out.
+  You are also given a "Web context about the topic" section (from a web search). Use it to sanity-check
+  the plan against how the topic ACTUALLY works, and flag any step that reflects a misunderstanding. For
+  example, finding a counterexample to a mathematical conjecture is itself a complete, valid result — it
+  is NOT a defect to fix, retry, or "research further". A step that treats it that way is out of place.
+  Decide:
+  - If any of the four phase headers is missing, a phase has no concrete step, Phase 1 does not call out
+    the assumptions and decision points, the plan merely restates the goal (e.g. it contains a "# Goal"
+    heading), or a step is out of place / contradicts the topic's web context, then the plan is WRONG.
+    Set "decision" to "change", rewrite the FULL corrected plan into "artifact" (removing or fixing the
+    out-of-place steps and adding any missing assumptions/decisions to Phase 1), and put a one-sentence
+    justification in "message".
+  - Only if all four phases are present with concrete steps, Phase 1 calls out the assumptions and
+    decisions, and no step contradicts the topic, set "decision" to "ok", leave "artifact" empty, and say
+    the plan needs no changes.
+  Use "decision" values of exactly "change" or "ok" (never "continue").
+Output: plan conditional
+Research: topic
+Transition: change -> PlanReviewer, ok -> StepReviewer, StepReviewer
+
+7. StepReviewer
+Role: Step reviewer
+Action:
+  Classify every step of the plan as exactly one of "decision-point" (an assumption or a choice that must
+  be made), "request-for-information", "action", or "subgoal". This role is computed deterministically by
+  the engine (it does not call the model): the engine parses the plan's steps and records each step's
+  classification in the audit trail. See StepClassifier.
+Output: none
+Compute: classify-steps
 Transition: ResponseBuilder
 
-6. ResponseBuilder
+8. ResponseBuilder
 Role: Final responder
 Action:
-  Tell the user, in one or two sentences, that their request has been turned into a goal and a plan and
-  that both files were created successfully.
+  Tell the user, in one or two sentences, that their request has been turned into a goal and a plan
+  (reviewed) and that both files were created successfully.
   Do NOT paste the file contents, and do NOT write the file paths yourself: the exact file links are
   appended automatically after your message, so just give the friendly confirmation.
   Put that confirmation in "message". Set "decision" to "done". Leave "artifact" empty.

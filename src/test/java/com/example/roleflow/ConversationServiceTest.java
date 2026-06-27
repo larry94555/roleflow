@@ -42,7 +42,7 @@ class ConversationServiceTest {
         AuditService audit = new AuditService(50);
         RoleFlowEngine engine = new RoleFlowEngine(
                 inactive, new RoleFlowSession(), new GoalFileWriter(Path.of("target/test-goals")),
-                new SessionLabeler("target/test-goals"), audit, new ObjectMapper(), 20);
+                new SessionLabeler("target/test-goals"), audit, null, new ObjectMapper(), 20);
         return new ConversationService(memory, llama, inactive, engine, audit, 1024, defaultSystem);
     }
 
@@ -105,7 +105,7 @@ class ConversationServiceTest {
         AuditService audit = new AuditService(50);
         RoleFlowEngine engine = new RoleFlowEngine(active, new RoleFlowSession(),
                 new GoalFileWriter(Path.of("target/test-goals")), new SessionLabeler("target/test-goals"),
-                audit, new ObjectMapper(), 20);
+                audit, null, new ObjectMapper(), 20);
         ConversationService service = new ConversationService(
                 memory((p, m) -> "", 8192), llama, active, engine, audit, 1024, "");
 

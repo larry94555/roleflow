@@ -26,7 +26,7 @@ public class RoleFlowConfig {
 
     private static final Pattern ROLE_HEADER = Pattern.compile("^\\s*(\\d+)\\.\\s+([A-Za-z][\\w-]*)\\s*$");
     private static final Pattern FIELD_HEADER =
-            Pattern.compile("^\\s*(Role|Action|Output|Transition)\\s*:(.*)$");
+            Pattern.compile("^\\s*(Role|Action|Output|Reads|Compute|Research|Transition)\\s*:(.*)$");
 
     private final List<Role> roles;
     private final Map<String, Role> byName;
@@ -104,10 +104,34 @@ public class RoleFlowConfig {
         if (number == null || name == null) return;
         String title = dedent(value(fields, "role"));
         String action = dedent(value(fields, "action"));
-        String output = value(fields, "output").trim();
-        if (output.isBlank() || "none".equalsIgnoreCase(output)) output = null;
+
+        // Output field: "<kind>" or "none", optionally followed by "conditional" (write only when the
+        // model supplies an artifact; do not fall back to the message).
+        String outputKind = null;
+        boolean outputMandatory = true;
+        String[] outputTokens = value(fields, "output").trim().toLowerCase(Locale.ROOT).split("\\s+");
+        if (outputTokens.length > 0 && !outputTokens[0].isBlank() && !"none".equals(outputTokens[0])) {
+            outputKind = outputTokens[0];
+        }
+        for (String token : outputTokens) {
+            if ("conditional".equals(token)) outputMandatory = false;
+        }
+
+        // Reads field: present and non-blank (and not "none") means the role needs prior artifact content.
+        String reads = value(fields, "reads").trim();
+        boolean readsArtifacts = !reads.isBlank() && !"none".equalsIgnoreCase(reads);
+
+        // Compute field: names an engine built-in that produces the role's result deterministically.
+        String compute = value(fields, "compute").trim();
+        if (compute.isBlank() || "none".equalsIgnoreCase(compute)) compute = null;
+
+        // Research field: present and non-blank (and not "none") means fetch web context for the topic.
+        String research = value(fields, "research").trim();
+        boolean researchesTopic = !research.isBlank() && !"none".equalsIgnoreCase(research);
+
         List<Role.Transition> transitions = parseTransitions(value(fields, "transition"));
-        result.add(new Role(number, name, title, action, output, transitions));
+        result.add(new Role(number, name, title, action, outputKind, outputMandatory, readsArtifacts,
+                compute, researchesTopic, transitions));
     }
 
     private static List<Role.Transition> parseTransitions(String text) {

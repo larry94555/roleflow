@@ -28,6 +28,10 @@ public record AuditEvent(
         MODEL_REQUEST,
         /** The raw response the model returned, plus the decision it chose. */
         MODEL_RESPONSE,
+        /** A role's human-readable result/finding (e.g. a reviewer's verdict), plus its decision. */
+        ROLE_RESULT,
+        /** The outcome of a deterministic structure check on an artifact (e.g. the plan's four phases). */
+        VALIDATION,
         /** A goal/plan artifact file was written. */
         ARTIFACT_WRITTEN,
         /** How the model's decision was turned into the next step. */

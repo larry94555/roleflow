@@ -113,16 +113,76 @@ class RoleFlowConfigTest {
     }
 
     @Test
-    void shippedActiveConfigParsesIntoSixRoles() throws Exception {
+    void shippedActiveConfigParsesIntoEightRoles() throws Exception {
         Path path = Path.of("config/roleflow.active");
-        List<Role> roles = RoleFlowConfig.parse(Files.readString(path));
+        RoleFlowConfig config = new RoleFlowConfig(RoleFlowConfig.parse(Files.readString(path)));
+        List<Role> roles = config.roles();
 
-        assertEquals(6, roles.size(), "the shipped workflow should define six roles");
-        assertEquals(List.of("SignalOrRequest", "SignalResponse", "HandleRequest",
-                        "GoalBuilder", "PlanBuilder", "ResponseBuilder"),
+        assertEquals(8, roles.size(), "the shipped workflow should define eight roles");
+        assertEquals(List.of("SignalOrRequest", "SignalResponse", "HandleRequest", "GoalBuilder",
+                        "PlanBuilder", "PlanReviewer", "StepReviewer", "ResponseBuilder"),
                 roles.stream().map(Role::name).toList());
-        // Goal/plan are the artifact-producing steps.
-        assertEquals("goal", roles.get(3).outputKind());
-        assertEquals("plan", roles.get(4).outputKind());
+
+        // Goal/plan are the mandatory artifact-producing steps.
+        assertEquals("goal", config.byName("GoalBuilder").outputKind());
+        assertTrue(config.byName("GoalBuilder").outputMandatory());
+        assertEquals("plan", config.byName("PlanBuilder").outputKind());
+
+        // PlanReviewer writes the plan only conditionally; StepReviewer writes nothing.
+        Role planReviewer = config.byName("PlanReviewer");
+        assertEquals("plan", planReviewer.outputKind());
+        assertFalse(planReviewer.outputMandatory(), "the reviewer's output is conditional");
+        assertFalse(config.byName("StepReviewer").hasOutput());
+
+        // StepReviewer is computed deterministically by the engine; ResponseBuilder only reports locations.
+        assertTrue(config.byName("StepReviewer").isComputed(), "the step reviewer is engine-computed");
+        assertEquals("classify-steps", config.byName("StepReviewer").compute());
+
+        // PlanReviewer fetches web context to sanity-check the plan against the topic.
+        assertTrue(config.byName("PlanReviewer").researchesTopic(), "the plan reviewer researches the topic");
+        assertFalse(config.byName("GoalBuilder").researchesTopic());
+        assertFalse(config.byName("ResponseBuilder").needsArtifactContent(),
+                "the responder only reports file locations");
+
+        // The plan flows through both reviewers before the response.
+        assertEquals("PlanReviewer", config.byName("PlanBuilder").resolve("continue"));
+        assertEquals("PlanReviewer", planReviewer.resolve("change"), "a change re-reviews the plan");
+        assertEquals("StepReviewer", planReviewer.resolve("ok"));
+        // Any unexpected decision (e.g. a model that says "continue") defaults forward, not to "done".
+        assertEquals("StepReviewer", planReviewer.resolve("continue"));
+        assertEquals("StepReviewer", planReviewer.resolve("anything-unexpected"));
+        assertEquals("ResponseBuilder", config.byName("StepReviewer").resolve("continue"));
+    }
+
+    @Test
+    void clarifierUsesTheAwaitSentinelToWaitForTheUser() throws Exception {
+        RoleFlowConfig config = new RoleFlowConfig(
+                RoleFlowConfig.parse(Files.readString(Path.of("config/roleflow.active"))));
+        Role handleRequest = config.byName("HandleRequest");
+
+        assertEquals("await", handleRequest.resolve("unclear"));
+        assertEquals("GoalBuilder", handleRequest.resolve("clear"));
+        assertEquals("done", handleRequest.resolve("cancelled"));
+    }
+
+    @Test
+    void parsesConditionalOutput() {
+        List<Role> roles = RoleFlowConfig.parse(
+                "1. Reviewer\nRole: r\nAction: review\nOutput: plan conditional\nTransition: done\n");
+
+        assertEquals("plan", roles.get(0).outputKind());
+        assertFalse(roles.get(0).outputMandatory());
+    }
+
+    @Test
+    void parsesReadsFieldForNonOutputReaders() {
+        List<Role> roles = RoleFlowConfig.parse(
+                "1. Reviewer\nRole: r\nAction: classify the steps\nOutput: none\nReads: plan\n"
+                        + "Transition: done\n");
+
+        assertFalse(roles.get(0).hasOutput());
+        assertTrue(roles.get(0).needsArtifactContent(), "a Reads field opts a non-output role into content");
+        assertTrue(roles.get(0).action().contains("classify the steps"),
+                "the Reads field must not swallow the Action text");
     }
 }

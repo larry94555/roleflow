@@ -72,9 +72,6 @@
     <h1>RoleFlow</h1>
     <p class="subtitle">Send a prompt to the local llama-server. Replies stay in the conversation below.</p>
 
-    <label for="system">System prompt (optional)</label>
-    <textarea id="system" rows="2" placeholder="You are a helpful assistant."></textarea>
-
     <div id="transcript"></div>
 
     <div id="composer">
@@ -86,7 +83,6 @@
     </div>
 
     <script>
-        const systemBox = document.getElementById("system");
         const transcript = document.getElementById("transcript");
         const composer = document.getElementById("composer");
         const composerLabel = document.getElementById("composerLabel");
@@ -163,13 +159,6 @@
                 return;
             }
 
-            const isFirst = transcript.children.length === 0;
-            // The system prompt applies to the session, so send it once and then lock it.
-            const system = isFirst ? (systemBox.value.trim() || null) : null;
-            if (isFirst) {
-                systemBox.readOnly = true;
-            }
-
             const auditId = newId();
             const turn = appendTurn(text, auditId);
 
@@ -188,7 +177,7 @@
                 const res = await fetch("/ask", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ prompt: text, system, auditId })
+                    body: JSON.stringify({ prompt: text, auditId })
                 });
                 const data = await res.json();
                 if (!res.ok || data.error) {

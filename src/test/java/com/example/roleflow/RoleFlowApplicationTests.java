@@ -54,6 +54,9 @@ class RoleFlowApplicationTests {
     private SessionLabeler sessionLabeler;
 
     @Autowired
+    private TopicResearcher topicResearcher;
+
+    @Autowired
     private AuditService auditService;
 
     @Autowired
@@ -86,6 +89,7 @@ class RoleFlowApplicationTests {
         assertNotNull(roleFlowSession);
         assertNotNull(goalFileWriter);
         assertNotNull(sessionLabeler);
+        assertNotNull(topicResearcher);
         assertNotNull(auditService);
         assertNotNull(auditController);
         assertNotNull(goalFileController);
