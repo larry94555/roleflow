@@ -62,4 +62,17 @@ class RoleFlowReplyTest {
         assertEquals("continue", reply.decision(), "decision must be read despite the literal newline");
         assertEquals("Line one\nLine two", reply.message());
     }
+
+    @Test
+    void keepsTheFirstValueWhenAKeyIsDuplicated() {
+        // Smaller models sometimes emit a key twice — the real content first, then an empty template echo
+        // (e.g. "artifact":"...plan...","artifact":""). Keeping the first occurrence preserves the content.
+        String raw = "{\"message\":\"plan built\",\"decision\":\"continue\","
+                + "\"artifact\":\"## Phase 1\",\"decision\":\"continue\",\"artifact\":\"\"}";
+
+        RoleFlowReply reply = RoleFlowReply.parse(raw, mapper);
+
+        assertEquals("continue", reply.decision());
+        assertEquals("## Phase 1", reply.artifact(), "the first, non-empty artifact must win");
+    }
 }

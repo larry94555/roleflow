@@ -193,8 +193,10 @@ through DuckDuckGo's no-API-key endpoints:
 1. the full `html.duckduckgo.com` page, then
 2. the lighter `lite.duckduckgo.com` page as a fallback.
 
-Results are de-duplicated by the page order and returned as JSON. The HTTP call is behind an injectable
-`HtmlFetcher`, so the parsing is unit-tested offline with canned HTML.
+Both endpoints are queried with an HTTP **`POST`** (the query is sent as the `q` form parameter). A plain
+`GET` now returns an HTTP `202` anti-bot challenge page with no results, so the fetcher posts the query and
+accepts only an HTTP `200` results page. Results are de-duplicated by the page order and returned as JSON.
+The HTTP call is behind an injectable `HtmlFetcher`, so the parsing is unit-tested offline with canned HTML.
 
 **Arguments:** `query` (required), `max_results` (1–20, default 5), `time_range`
 (`day`/`week`/`month`/`year`, optional).

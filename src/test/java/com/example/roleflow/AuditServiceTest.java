@@ -89,6 +89,24 @@ class AuditServiceTest {
     }
 
     @Test
+    void recordsRoleResultsForVisibilityInTheTrail() {
+        AuditService audit = new AuditService(50);
+        audit.runStarted("run-r", "web");
+        audit.roleResult("run-r", "PlanReviewer", "Reviewed the plan; no changes needed.", "ok");
+
+        AuditEvent event = audit.viewByRun("run-r").events().stream()
+                .filter(e -> e.type() == AuditEvent.Type.ROLE_RESULT)
+                .findFirst().orElseThrow();
+        assertEquals("PlanReviewer", event.role());
+        assertEquals("ok", event.decision());
+        assertEquals("Reviewed the plan; no changes needed.", event.detail());
+
+        String line = AuditService.format("run-r", event);
+        assertTrue(line.contains("ROLE_RESULT"));
+        assertTrue(line.contains("result: Reviewed the plan; no changes needed."));
+    }
+
+    @Test
     void exposesSessionPrefixFromRunId() {
         AuditService audit = new AuditService(50);
         audit.runStarted("legendre_20260625-101010", "web");

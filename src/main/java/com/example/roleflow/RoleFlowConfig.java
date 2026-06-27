@@ -26,7 +26,7 @@ public class RoleFlowConfig {
 
     private static final Pattern ROLE_HEADER = Pattern.compile("^\\s*(\\d+)\\.\\s+([A-Za-z][\\w-]*)\\s*$");
     private static final Pattern FIELD_HEADER =
-            Pattern.compile("^\\s*(Role|Action|Output|Transition)\\s*:(.*)$");
+            Pattern.compile("^\\s*(Role|Action|Output|Reads|Compute|Research|Provides|Skills|Transition)\\s*:(.*)$");
 
     private final List<Role> roles;
     private final Map<String, Role> byName;
@@ -104,10 +104,52 @@ public class RoleFlowConfig {
         if (number == null || name == null) return;
         String title = dedent(value(fields, "role"));
         String action = dedent(value(fields, "action"));
-        String output = value(fields, "output").trim();
-        if (output.isBlank() || "none".equalsIgnoreCase(output)) output = null;
+
+        // Output field: "<kind>" or "none", optionally followed by "conditional" (write only when the
+        // model supplies an artifact; do not fall back to the message).
+        String outputKind = null;
+        boolean outputMandatory = true;
+        String[] outputTokens = value(fields, "output").trim().toLowerCase(Locale.ROOT).split("\\s+");
+        if (outputTokens.length > 0 && !outputTokens[0].isBlank() && !"none".equals(outputTokens[0])) {
+            outputKind = outputTokens[0];
+        }
+        for (String token : outputTokens) {
+            if ("conditional".equals(token)) outputMandatory = false;
+        }
+
+        // Reads field: present and non-blank (and not "none") means the role needs prior artifact content.
+        String reads = value(fields, "reads").trim();
+        boolean readsArtifacts = !reads.isBlank() && !"none".equalsIgnoreCase(reads);
+
+        // Compute field: names an engine built-in that produces the role's result deterministically.
+        String compute = value(fields, "compute").trim();
+        if (compute.isBlank() || "none".equalsIgnoreCase(compute)) compute = null;
+
+        // Research field: present and non-blank (and not "none") means include the run's topic context.
+        String research = value(fields, "research").trim();
+        boolean researchesTopic = !research.isBlank() && !"none".equalsIgnoreCase(research);
+
+        // Provides field: what the role's output feeds the engine (e.g. "topics").
+        String provides = value(fields, "provides").trim();
+        if (provides.isBlank() || "none".equalsIgnoreCase(provides)) provides = null;
+
+        // Skills field: comma/space-separated names of skills the role may apply (e.g. "mathematics").
+        List<String> skills = parseSkills(value(fields, "skills"));
+
         List<Role.Transition> transitions = parseTransitions(value(fields, "transition"));
-        result.add(new Role(number, name, title, action, output, transitions));
+        result.add(new Role(number, name, title, action, outputKind, outputMandatory, readsArtifacts,
+                compute, researchesTopic, provides, skills, transitions));
+    }
+
+    /** Parses a comma/semicolon/whitespace-separated list of skill names, dropping blanks and "none". */
+    private static List<String> parseSkills(String text) {
+        if (text == null || text.isBlank()) return List.of();
+        List<String> skills = new ArrayList<>();
+        for (String part : text.split("[,;\\s]+")) {
+            String name = part.trim();
+            if (!name.isEmpty() && !"none".equalsIgnoreCase(name)) skills.add(name);
+        }
+        return List.copyOf(skills);
     }
 
     private static List<Role.Transition> parseTransitions(String text) {

@@ -99,6 +99,17 @@ public class AuditService {
                 builder().role(role).response(response).decision(decision).build());
     }
 
+    /** Records a role's human-readable result (e.g. a reviewer's verdict) so it is visible in the trail. */
+    public void roleResult(String runId, String role, String result, String decision) {
+        record(runId, AuditEvent.Type.ROLE_RESULT,
+                builder().role(role).decision(decision).detail(result).build());
+    }
+
+    /** Records the outcome of a deterministic structure check (e.g. plan validation). */
+    public void validation(String runId, String role, String detail) {
+        record(runId, AuditEvent.Type.VALIDATION, builder().role(role).detail(detail).build());
+    }
+
     public void artifactWritten(String runId, String role, String kind, String path) {
         record(runId, AuditEvent.Type.ARTIFACT_WRITTEN,
                 builder().role(role).detail("kind=" + kind + " path=" + path).build());
@@ -193,6 +204,11 @@ public class AuditService {
             case MODEL_RESPONSE -> line.append(" role=").append(event.role())
                     .append(" decision=").append(orDash(event.decision()))
                     .append("\n    response: ").append(indent(event.response()));
+            case ROLE_RESULT -> line.append(" role=").append(event.role())
+                    .append(" decision=").append(orDash(event.decision()))
+                    .append("\n    result: ").append(indent(event.detail()));
+            case VALIDATION -> line.append(" role=").append(event.role())
+                    .append("\n    validation: ").append(indent(event.detail()));
             case ARTIFACT_WRITTEN -> line.append(" role=").append(event.role())
                     .append(" ").append(orDash(event.detail()));
             case TRANSITION -> line.append(" role=").append(event.role())
