@@ -44,6 +44,14 @@ The document is Markdown, with the **goal first** and the **plan second**:
 - ...
 ## Phase 4 - Next steps
 - ...
+
+# Step Details
+
+## Step 1: <step text> — <category>
+<detail added by the function for this step>
+
+## Step 2: <step text> — <category>
+<detail added by the function for this step>
 ```
 
 - The **`# Goal`** section is authored by the **GoalBuilder** role.
@@ -51,6 +59,10 @@ The document is Markdown, with the **goal first** and the **plan second**:
   has the four fixed phase headers, each with at least one `- ` step, and Phase 1 calls out the assumptions
   and decision points the request implies. See
   [Plan structure enforcement](CURRENT_PROCESS.md#plan-structure-enforcement).
+- The **`# Step Details`** section holds one `## Step N: …` subsection per plan step, each added by the
+  **function** that StepReviewer calls for that step's category (SubgoalPlanner / ActionPlanner /
+  InformationPlanner / DecisionPlanner). The high-level plan above is left unchanged — these sections only
+  *add* detail. See [Functions](CURRENT_PROCESS.md#functions).
 
 ## How the file is generated
 
@@ -63,6 +75,10 @@ The document is Markdown, with the **goal first** and the **plan second**:
    as the single plan file.
 3. **PlanReviewer** may rewrite the plan; if it does, the engine recomposes goal + revised plan and
    overwrites the **same** file (the run id keeps the name stable). A "no change" review writes nothing.
+4. **StepReviewer** classifies each step and, for each, calls the mapped **function**
+   (SubgoalPlanner / ActionPlanner / InformationPlanner / DecisionPlanner). Each function's output is appended
+   as a `## Step N: …` subsection under `# Step Details`, and the engine rewrites the same file. Each function
+   call is recorded in the audit trail like a role. See [Functions](CURRENT_PROCESS.md#functions).
 
 Internally the goal and plan stay separate (each is what later roles read and what change-detection
 compares); only the on-disk artifact is combined.

@@ -24,7 +24,18 @@
 #                mathematics"). The engine injects a skill's guidance into this role's system prompt ONLY
 #                when the run's identified topics include the skill (the skill name matches a topic), so a
 #                role gets domain knowledge exactly when the subject calls for it. See SkillRegistry.
+#   Kind:        optional. "Kind: function" marks a FUNCTION role: instead of being reached by a Transition,
+#                a function is CALLED by another role (via that role's Calls field) and RETURNS to the
+#                caller when done. A function's Transition is "return".
+#   Calls:       optional. Per-step dispatch for a role that calls a function for each classified step
+#                (StepReviewer), in the form "category -> FunctionRole, ...". For every step, the engine
+#                calls the mapped function, which adds a detail section for that step to the plan file and
+#                returns. Each function call is recorded in the audit trail like a normal role.
 #   Transition:  how to choose the next role from the model's "decision"
+#
+# A FUNCTION is the one role type that is not a transition point: it is called, it does its work (adding a
+# per-step detail section to the plan file), and control returns to the role that called it. Functions are
+# never reached by Transition; they are only invoked through a Calls mapping.
 #
 # At each step the engine sends Action to llama-server as the system prompt, together with the
 # unchanging user prompt and the shared conversation memory. The model must reply with a SINGLE
@@ -213,15 +224,79 @@ Action:
   be made), "request-for-information", "action", or "subgoal". This role is computed deterministically by
   the engine (it does not call the model): the engine parses the plan's steps and records each step's
   classification in the audit trail. See StepClassifier.
+  Then, for EACH step, the engine CALLS the function mapped to the step's classification (see the Calls
+  field below). Each function adds a detail section for that step to the plan file and returns here. The
+  high-level plan is left unchanged — only per-step detail sections are added.
 Output: none
 Compute: classify-steps
+Calls: subgoal -> SubgoalPlanner, action -> ActionPlanner, request-for-information -> InformationPlanner, decision-point -> DecisionPlanner
 Transition: ResponseBuilder
 
-10. ResponseBuilder
+10. SubgoalPlanner
+Role: Function
+Action:
+  You are detailing ONE plan step that was classified as a "subgoal" (it needs its own breakdown). Build a
+  short set of high-level SUBSTEPS that together satisfy this step, organised as the same four phases the
+  plan uses:
+    Phase 1 - Preparation (write "no preparation substeps." if none are needed)
+    Phase 2 - Action
+    Phase 3 - Verification
+    Phase 4 - Next substeps
+  Under each phase, write at least one concrete substep as a "- " bullet. Put ONLY the four-phase breakdown
+  in "message" — do not narrate or refer to step ordering (never write "The first step is ..."). Set
+  "decision" to "return".
+Output: none
+Reads: plan
+Kind: function
+Transition: return
+
+11. ActionPlanner
+Role: Function
+Action:
+  You are detailing ONE plan step that was classified as an "action". Classify the action as EXACTLY one of:
+  "write code" (code is only written), "write and run code" (the written code is also run as part of the
+  step), "invoke a tool", or "invoke a service". If more than one tool would be needed, treat it as
+  "write code". Answer in ONE short sentence: the chosen category and a brief reason, phrased about THIS
+  step. Do not narrate the plan or refer to step ordering (never write "The first step is ..."). Put that
+  one-line answer in "message". Set "decision" to "return".
+Output: none
+Reads: plan
+Kind: function
+Transition: return
+
+12. InformationPlanner
+Role: Function
+Action:
+  You are detailing ONE plan step that was classified as a "request-for-information". Classify how the
+  information will be obtained as EXACTLY one of: "request from web" (a straightforward web search),
+  "research on web" (may need multiple web interactions over time; the worst case), "process through code"
+  (answer computed by writing and running code locally), "process through a tool" (answer comes from an
+  existing tool), or "web and code" (needs a combination). Answer in ONE short sentence: the chosen category
+  and a brief reason, phrased about THIS step. Do not narrate the plan or refer to step ordering (never write
+  "The first step is ..."). Put that one-line answer in "message". Set "decision" to "return".
+Output: none
+Reads: plan
+Kind: function
+Transition: return
+
+13. DecisionPlanner
+Role: Function
+Action:
+  You are detailing ONE plan step that was classified as a "decision-point". Either state the decision made
+  (e.g. "coding will use Python") or the method that will be used to make it: "will ask user", "request
+  information", or "do tests". Answer in ONE short sentence about THIS step. Do not narrate the plan or refer
+  to step ordering (never write "The first step is ..."). Put that one-line answer in "message". Set
+  "decision" to "return".
+Output: none
+Reads: plan
+Kind: function
+Transition: return
+
+14. ResponseBuilder
 Role: Final responder
 Action:
   Tell the user, in one or two sentences, that their request has been turned into a goal and a plan
-  (reviewed), saved together in a single plan file.
+  (reviewed, with per-step detail added), saved together in a single plan file.
   Do NOT paste the file contents, and do NOT write the file path yourself: the exact file link is
   appended automatically after your message, so just give the friendly confirmation.
   Put that confirmation in "message". Set "decision" to "done". Leave "artifact" empty.

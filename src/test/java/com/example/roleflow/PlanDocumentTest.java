@@ -57,6 +57,28 @@ class PlanDocumentTest {
     }
 
     @Test
+    void appendsStepDetailSectionsUnderAStepDetailsHeading() {
+        String doc = PlanDocument.compose("Build the thing", PLAN,
+                java.util.List.of("## Step 1: do it — action\n\nwrite code",
+                        "## Step 2: ask — request-for-information\n\nrequest from web"));
+
+        // Goal, then plan, then a Step Details section with one subsection per step, in order.
+        int goalAt = doc.indexOf("# Goal");
+        int planAt = doc.indexOf("# Plan");
+        int detailsAt = doc.indexOf("# Step Details");
+        assertTrue(goalAt >= 0 && planAt > goalAt && detailsAt > planAt, doc);
+        assertTrue(doc.contains("## Step 1: do it — action\n\nwrite code"), doc);
+        assertTrue(doc.contains("## Step 2: ask — request-for-information\n\nrequest from web"), doc);
+    }
+
+    @Test
+    void omitsStepDetailsHeadingWhenThereAreNoSections() {
+        String doc = PlanDocument.compose("g", PLAN, java.util.List.of());
+        assertFalse(doc.contains("# Step Details"), doc);
+        assertEquals(PlanDocument.compose("g", PLAN), doc, "no sections is identical to the two-arg form");
+    }
+
+    @Test
     void handlesABlankGoalGracefully() {
         String doc = PlanDocument.compose("", PLAN);
 
