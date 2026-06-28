@@ -45,7 +45,7 @@ Role:  Consruct Goal
 
 Action:  The goal is a separate artifact.  It is the criteria for when the request is satisfied. A criteria should be a combination of information returned, a state either updated or confirmed, or an action carried out.  It should also state whether the goal is implemented in a singular manner or an ongoing manner.  
 
-Output:  A goal file should be created that captures the detail in the action in a human readable form
+Output:  A plan file should be created that captures the detail in the action in a human readable form
 
 Transition:  After the goal has been constructed, go to PlanBuilder
 
@@ -55,7 +55,7 @@ Role:  Construct a plan
 
 Action:  Buld a set of high level steps that will satisfy the goal.  Each step is a subgoal that in conjunction will satisfy the goal.  There are four phases of steps.  Phase 1:  Preparation steps.  Is any preparation needed such as information gathering or tool installing or working through constraints.  These high level steps would be called out in Phase 1.  Phase 2:  Action steps.  What actions are needed for this plan.  These can include requests for information, actions needed, or goal states sought.  Phase 3:  Verification steps.  Did the action complete successfully?  What is the current state?  Was the goal achieved?  Phase 4:  Next steps.  Is a future action required? If the goal failed, is a retry or additional action needed? Is another check needed at a future time as part of an ongoing activity?
 
-Output:  A plan file should be created that captures the high level steps of the 4 phases in a human readable form.
+Output:  An updated plan file should now have a plan section that includes the high level steps of the 4 phases in a human readable form.
 
 Transition: After the high level plan is done, go to the PlanReviewer
 
@@ -65,7 +65,7 @@ Role: Review plan
 
 Action:  Review the plan created.  Review the high level steps of the plan and see if any steps are missing or if any of the steps are not quite right.  If a changed is recommended, then update the high level plan and provide a justification for the change.  If no change is needed, then confirm this in the audit log.
 
-Output:  An updated flan file is needed otherwise no output
+Output:  An updated plan file is needed otherwise no output
 
 Transition:  If a change is recommended, after the change, go to the PlanReviewer again for a review of the updated plan.  If no change is recommended, then go to StepReviewer
 
@@ -73,11 +73,55 @@ Transition:  If a change is recommended, after the change, go to the PlanReviewe
 
 Role: Review steps in plan
 
-Action:  For now, each step step should be reviewed.  Iterate through each step in the plan and evaluate whether the step whether it is a "request-for-information", an "action" that will require tools or external services, or a "subgoal" that will require planning and a breakdown into steps for that subgoal.   Each step should be evaluated as a "request-for-information", "action", or "subgoal".  These details should be added to the audit trail. 
+Action:  For now, each step step should be reviewed.  Iterate through each step in the plan and evaluate whether the step whether it is a "request-for-information", an "action" that will require tools or external services, or a "subgoal" that will require planning and a breakdown into steps for that subgoal.   Each step should be evaluated as a "request-for-information", "decision-point", "action", or "subgoal".  These details should be added to the audit trail. 
+
+Function Calls:  For each step, if the step is a "subgoal", make a call to SubgoalPlanner; if the step is an "action", make a call to ActionPlanner; if the step is an "request-for-information", then make a call to InformationPlanner; if the step is a "decision-point", then make a call to DecisionPlanner.
 
 Transition: After evaluation of all steps, go to ResponseBuilder.
 
-10.  ResponseBuilder
+10.  SubgoalPlanner
+
+Role:  Function
+
+Action: Buld a set of high level substeps that will satisfy the step.  Each step is itself a subgoal that in conjunction will satisfy the larger step.  There are four phases of subgoal.  Phase 1:  Preparation substeps.  Is any preparation needed such as information gathering or tool installing or working through constraints.  If no preparation needed, then say "no preparation steps."  These high level steps would be called out in Phase 1.  Phase 2:  Action substeps.  What actions are needed for this subgoal.  These can include requests for information, actions needed, or goal states sought.  Phase 3:  Verification substeps.  Did the action complete successfully?  What is the current state?  Was the step achieved?  Phase 4:  Next substeps.  Is a future action required? If the step failed, is a retry or additional action needed? Is another check needed at a future time as part of an ongoing activity?
+
+Output: An updaed plan file that adds a section associated with the step that includes the high level substeps of the 4 phases in a human readable form for the step.
+
+Transition:  Return back to the method that called this function
+
+11.  ActionPlanner
+
+Role: Function
+
+Action:  Actions for now will be one of the following forms:  "write code", "write and run code", "invoke a tool", or "invoke a service".  At this time, the only action will be add one of three categories to the updated plan file.  If there is need to invoke more than one tool, then treat it as a "write code".  "Write code" means that the code is only created.  "Write and run code" means that the code that is written will be run as part of the step.
+
+Output:  An updated plan file that adds a section associated with the step that will now say:  "write code", "write and run code", or "invoke a tool", or "invoke a service."
+
+Transition:  Return back to the method that called this function
+
+
+12.  InformationPlanner
+
+Role: Function
+
+Action: Action now will be to call out what type of information that needs to be retrieved.  For now, the step will be classified into "request from web", "research on web", "process through code", "process through a tool", "web and code".  "request from web" means that the information is readily retrievable from a web search.  "research on web" means that the information may not be readily retrievable.  It may require multiple interactions with the web over time.  To be clear, this is meant as a worst case scenario.  It is also possible that the answer is a simple request frmo the web.  The main point is tht "request from the web" is straight forward.  "research on the web" involves unknowns.  "process through code" means that the answer to the question can be determiend by writing code and running it locally.  "process through a tool" means that the answer is a response from an existing tool.  "web and code" means that the information may require a request to the web, research on the web, running of code, or running a tool." This is meant if a web search is needed but not enough in itself.
+
+Output: An updated plan file that adds a section associated with the step that will say "request from web", "research on web", "process through code", "process through a tool", or "web and code".
+
+Transition:  Return back to the method that called this function.
+
+13.  DecisionPlanner
+
+Role: Function
+
+Action: Either call out the decision made or the method that will be used to make a decision.  For now, let us return eithe decision made such as "coding will use Python", "will ask user", "request information", or "do tests".
+
+Output: An updated plan file that adds a section associated with the step that will say the decision made, "will ask user", "request information", or "do tests".
+
+Transition:  Return back to the method that called this function.
+
+
+14.  ResponseBuilder
 
 Role:  Response to user
 

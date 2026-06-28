@@ -25,8 +25,8 @@ public class RoleFlowConfig {
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(RoleFlowConfig.class);
 
     private static final Pattern ROLE_HEADER = Pattern.compile("^\\s*(\\d+)\\.\\s+([A-Za-z][\\w-]*)\\s*$");
-    private static final Pattern FIELD_HEADER =
-            Pattern.compile("^\\s*(Role|Action|Output|Reads|Compute|Research|Provides|Skills|Transition)\\s*:(.*)$");
+    private static final Pattern FIELD_HEADER = Pattern.compile(
+            "^\\s*(Role|Action|Output|Reads|Compute|Research|Provides|Skills|Kind|Calls|Transition)\\s*:(.*)$");
 
     private final List<Role> roles;
     private final Map<String, Role> byName;
@@ -136,9 +136,16 @@ public class RoleFlowConfig {
         // Skills field: comma/space-separated names of skills the role may apply (e.g. "mathematics").
         List<String> skills = parseSkills(value(fields, "skills"));
 
+        // Kind field: "function" marks a role that is called by another role and returns to it.
+        String kind = value(fields, "kind").trim();
+        if (kind.isBlank() || "none".equalsIgnoreCase(kind)) kind = null;
+
+        // Calls field: per-category dispatch ("subgoal -> SubgoalPlanner, action -> ActionPlanner, ...").
+        List<Role.Transition> calls = parseTransitions(value(fields, "calls"));
+
         List<Role.Transition> transitions = parseTransitions(value(fields, "transition"));
         result.add(new Role(number, name, title, action, outputKind, outputMandatory, readsArtifacts,
-                compute, researchesTopic, provides, skills, transitions));
+                compute, researchesTopic, provides, skills, kind, calls, transitions));
     }
 
     /** Parses a comma/semicolon/whitespace-separated list of skill names, dropping blanks and "none". */

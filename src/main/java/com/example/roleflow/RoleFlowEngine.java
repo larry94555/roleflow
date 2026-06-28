@@ -145,6 +145,12 @@ public class RoleFlowEngine {
                 }
             }
 
+            // A role with function calls (StepReviewer) dispatches a function per classified step; each
+            // function adds a detail section to the plan file and returns here before the role transitions.
+            if (role.hasCalls()) {
+                runStepFunctions(role, runId, maxTokens, temperature, model);
+            }
+
             String target = role.resolve(reply.decision());
             if (target == null || Role.DONE.equalsIgnoreCase(target)) {
                 // target == null means the decision matched no transition and the role has no default;
@@ -291,6 +297,62 @@ public class RoleFlowEngine {
         }
         session.setWebContext(combined.toString().strip());
         return "Gathered context for " + topics.size() + " topic(s): " + String.join(", ", topics);
+    }
+
+    /**
+     * For a role that CALLS a function per step (StepReviewer), classifies the plan's steps, and for each one
+     * invokes the function mapped to its category. Each function call is a real model turn — recorded in the
+     * audit trail exactly like a role (ROLE_STARTED, MODEL_REQUEST/RESPONSE, ROLE_RESULT, ARTIFACT_WRITTEN) —
+     * that adds one detail section for that step to the plan file, then RETURNS to the caller.
+     */
+    private void runStepFunctions(Role caller, String runId, Integer maxTokens, Double temperature,
+                                  ModelInvoker model) throws Exception {
+        String plan = session.artifactContents().getOrDefault("plan", "");
+        List<StepClassifier.Classified> steps = StepClassifier.classify(plan);
+        for (int i = 0; i < steps.size(); i++) {
+            StepClassifier.Classified step = steps.get(i);
+            String functionName = caller.functionFor(step.classification());
+            Role function = functionName == null ? null : config.byName(functionName);
+            if (function == null) {
+                continue; // no function mapped for this category; leave the step without an added section
+            }
+            int stepNumber = i + 1;
+            audit.roleStarted(runId, function.name());
+            String systemPrompt = buildSystemPrompt(function, null) + stepContextSection(stepNumber, step);
+            RoleOutcome outcome = invokeRole(function, systemPrompt, session.topicPrompt(),
+                    maxTokens, temperature, model, runId);
+            String detail = outcome.reply().message().isBlank()
+                    ? outcome.raw().trim() : outcome.reply().message();
+            audit.roleResult(runId, function.name(), detail, outcome.reply().decision());
+
+            String body = outcome.artifact().isBlank() ? detail : outcome.artifact();
+            String section = "## Step " + stepNumber + ": " + step.text()
+                    + " — " + step.classification() + "\n\n" + body.strip();
+            session.addStepSection(section);
+            rewritePlanWithStepSections(runId, function.name());
+            // A function returns to its caller rather than transitioning; record the return like a transition.
+            audit.transition(runId, function.name(),
+                    "return -> " + caller.name() + " (function returned)");
+        }
+    }
+
+    /** Recomposes the plan file to include the step-detail sections gathered so far and records the write. */
+    private void rewritePlanWithStepSections(String runId, String byRole) throws java.io.IOException {
+        String goal = session.artifactContents().get("goal");
+        String plan = session.artifactContents().getOrDefault("plan", "");
+        String document = PlanDocument.compose(goal, plan, session.stepSections());
+        String path = writer.write("plan", runId, document);
+        session.addArtifact("plan", plan, path); // plan content unchanged; same file, overwritten with detail
+        audit.artifactWritten(runId, byRole, "plan", path);
+    }
+
+    /** The system-prompt section that tells a function which single step it is detailing. */
+    private static String stepContextSection(int number, StepClassifier.Classified step) {
+        return "\n\nYou are detailing ONE specific step of the plan, shown below. Provide the detail for THIS "
+                + "step only (not the whole plan), as described in your task, and put it in \"message\".\n"
+                + "Describe the step DIRECTLY. Do NOT refer to it by position and do NOT begin with phrases "
+                + "like \"The first step is\" or \"This step\" — write the detail itself.\n"
+                + "Step (classified as " + step.classification() + "): " + step.text();
     }
 
     /**

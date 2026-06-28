@@ -23,6 +23,7 @@ public class RoleFlowSession {
     private String topicPrompt;
     private String webContext;
     private List<String> topics = new ArrayList<>();
+    private final List<String> stepSections = new ArrayList<>();
     private final Map<String, String> artifactContents = new LinkedHashMap<>();
     private final Map<String, String> artifactPaths = new LinkedHashMap<>();
 
@@ -42,6 +43,7 @@ public class RoleFlowSession {
         this.topicPrompt = topicPrompt;
         this.webContext = null;
         this.topics = new ArrayList<>();
+        stepSections.clear();
         artifactContents.clear();
         artifactPaths.clear();
     }
@@ -58,6 +60,7 @@ public class RoleFlowSession {
         topicPrompt = null;
         webContext = null;
         topics = new ArrayList<>();
+        stepSections.clear();
         artifactContents.clear();
         artifactPaths.clear();
     }
@@ -96,6 +99,18 @@ public class RoleFlowSession {
      */
     public void setArtifactContent(String kind, String content) {
         artifactContents.put(kind, content);
+    }
+
+    /** Appends a per-step detail section (produced by a function) to the plan document. */
+    public void addStepSection(String section) {
+        if (section != null && !section.isBlank()) {
+            stepSections.add(section);
+        }
+    }
+
+    /** The per-step detail sections gathered so far, in step order. */
+    public List<String> stepSections() {
+        return new ArrayList<>(stepSections);
     }
 
     public String currentRole() {

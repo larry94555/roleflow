@@ -26,12 +26,16 @@ import java.util.List;
  *                        means the engine parses the reply into the session's topic list; null for none.
  * @param skills          the names of the skills this role may apply; each is injected into the role's system
  *                        prompt when the run's topics include the skill (see {@link SkillRegistry}).
+ * @param kind            the role's kind; {@code "function"} marks a role that is CALLED by another role and
+ *                        RETURNS to it (rather than being reached by transition), or null for a normal role.
+ * @param calls           per-category dispatch rules ({@code label -> function-role}) used by a role that
+ *                        calls a function for each classified step (StepReviewer); empty for most roles.
  * @param transitions     ordered decision-to-target rules
  */
 public record Role(int number, String name, String title, String action, String outputKind,
                    boolean outputMandatory, boolean readsArtifacts, String compute,
-                   boolean researchesTopic, String provides, List<String> skills,
-                   List<Transition> transitions) {
+                   boolean researchesTopic, String provides, List<String> skills, String kind,
+                   List<Transition> calls, List<Transition> transitions) {
 
     /** True when this role's output is parsed into the session's list of topics. */
     public boolean providesTopics() {
@@ -43,11 +47,35 @@ public record Role(int number, String name, String title, String action, String 
         return compute != null && !compute.isBlank();
     }
 
+    /** True when this role is a function: it is called by another role and returns to it (no transition). */
+    public boolean isFunction() {
+        return "function".equalsIgnoreCase(kind);
+    }
+
+    /** True when this role calls a function for each classified step (see {@link #functionFor}). */
+    public boolean hasCalls() {
+        return calls != null && !calls.isEmpty();
+    }
+
+    /** The function role to call for a step classified as {@code category}, or null if none is mapped. */
+    public String functionFor(String category) {
+        String value = category == null ? "" : category.trim();
+        for (Transition call : calls) {
+            if (call.label() != null && call.label().equalsIgnoreCase(value)) {
+                return call.target();
+            }
+        }
+        return null;
+    }
+
     /** Sentinel target meaning "the run is complete". */
     public static final String DONE = "done";
 
     /** Sentinel target meaning "return this role's message to the user and wait for their next prompt". */
     public static final String AWAIT = "await";
+
+    /** Sentinel transition target for a function: return control to the role that called it. */
+    public static final String RETURN = "return";
 
     /**
      * A transition rule. A null {@link #label} is an unconditional transition (taken regardless of the

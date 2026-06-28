@@ -46,7 +46,7 @@ After a role returns, the engine resolves the model's `decision` against the rol
 A safety cap (`roleflow.max-steps`, default 20) stops runaway loops (including a reviewer that keeps
 recommending changes).
 
-## The ten roles
+## The fourteen roles
 
 ```
                          ┌──────────────────────┐
@@ -84,12 +84,17 @@ recommending changes).
                                    │  may rewrite plan │───┘  re-review)
                                    └────────┬──────────┘
                                         ok  ▼
-                                   ┌──────────────────┐
-                                   │ 9. StepReviewer   │  classifies each step
-                                   └────────┬──────────┘
+                                   ┌──────────────────┐   per step, CALL a function
+                                   │ 9. StepReviewer   │──────────────────────────────┐
+                                   │ classifies steps  │◀─────────────────────────────┘
+                                   └────────┬──────────┘   function returns   ┌───────────────────────┐
+                                            │              (10 SubgoalPlanner, │ each function adds a   │
+                                            │               11 ActionPlanner,  │ detail section for the │
+                                            │               12 InformationPlanner,│ step to the plan file │
+                                            │               13 DecisionPlanner) └───────────────────────┘
                                             ▼
                                    ┌──────────────────┐
-                                   │10. ResponseBuilder│
+                                   │14. ResponseBuilder│
                                    │     (done)        │
                                    └──────────────────┘
 ```
@@ -126,10 +131,24 @@ recommending changes).
 9. **StepReviewer (Step reviewer)** — classifies every step of the plan as `decision-point`,
    `request-for-information`, `action`, or `subgoal`, and records the classifications in the audit trail.
    This role is **computed deterministically by the engine** (no model call) — see
-   [Step classification](#step-classification). → role 10.
-10. **ResponseBuilder (Final responder)** — gives a brief confirmation that the goal and plan were created.
-    The engine then appends the exact file locations as `file:///` URLs (see [Files written](#files-written)),
+   [Step classification](#step-classification). Then, for **each** step, it **calls the function** mapped to
+   that step's classification (roles 10–13), which adds a detail section for the step to the plan file (see
+   [Functions](#functions)). → role 14.
+10. **SubgoalPlanner (Function)** — called for a `subgoal` step; produces a short four-phase breakdown of
+    substeps for that step. **Returns** to StepReviewer.
+11. **ActionPlanner (Function)** — called for an `action` step; classifies it as "write code", "write and
+    run code", "invoke a tool", or "invoke a service". **Returns** to StepReviewer.
+12. **InformationPlanner (Function)** — called for a `request-for-information` step; classifies how the
+    information is obtained ("request from web", "research on web", "process through code", "process through
+    a tool", "web and code"). **Returns** to StepReviewer.
+13. **DecisionPlanner (Function)** — called for a `decision-point` step; states the decision made or how it
+    will be made ("will ask user", "request information", "do tests"). **Returns** to StepReviewer.
+14. **ResponseBuilder (Final responder)** — gives a brief confirmation that the goal and plan were created.
+    The engine then appends the exact file location as a `file:///` URL (see [Files written](#files-written)),
     and the topics considered are added to the reply. → `done`.
+
+Roles 10–13 are **functions**: unlike the other roles they are not transition points — StepReviewer *calls*
+them and they *return* (see [Functions](#functions)).
 
 ## Topic context
 
@@ -227,14 +246,39 @@ classified.
 > event, so the PlanReviewer's verdict ("no changes needed" / its justification) and the StepReviewer's
 > per-step classifications are visible in both the audit log and the audit web page.
 
+## Functions
+
+Most roles are **transition points**: a role runs and the engine moves on to the next role. A **function**
+is the one role type that is different — it is *called* by another role, does its work, and *returns* to the
+caller. A function is marked with `Kind: function` and its transition is `return`; it is never reached by a
+`Transition`, only through a `Calls` mapping.
+
+The first use of functions is to **add detail to the plan**. After **StepReviewer** classifies the steps, it
+calls — for each step — the function mapped to that step's category (its `Calls` field):
+
+| Step category | Function called | What it adds |
+|---------------|-----------------|--------------|
+| `subgoal` | `SubgoalPlanner` | a four-phase breakdown of substeps for the step |
+| `action` | `ActionPlanner` | "write code" / "write and run code" / "invoke a tool" / "invoke a service" |
+| `request-for-information` | `InformationPlanner` | "request from web" / "research on web" / "process through code" / "process through a tool" / "web and code" |
+| `decision-point` | `DecisionPlanner` | the decision made, or "will ask user" / "request information" / "do tests" |
+
+Each function call is a real model turn through [`RoleFlowEngine`](src/main/java/com/example/roleflow/RoleFlowEngine.java)
+and is recorded in the audit trail **exactly like a role** — `ROLE_STARTED`, `MODEL_REQUEST`,
+`MODEL_RESPONSE`, `ROLE_RESULT`, an `ARTIFACT_WRITTEN` for the updated plan file, and a `TRANSITION` noting
+the `return` to StepReviewer. The function's output is appended to the plan file as one
+`## Step N: <step> — <category>` subsection under a new `# Step Details` heading; the **high-level plan is
+left unchanged** — functions only *add* per-step detail (see [Generated_Plans.md](Generated_Plans.md)).
+
 ## What the user experiences
 
 - **A signal** ("Hello", "Thanks for that"): analyse topics → classify → respond. One visible answer,
   **no files created**.
 - **A clear request**: analyse topics (and gather their context) → classify → clarify (clear) → goal →
-  plan → review → respond, in one turn. One visible answer (from ResponseBuilder), and **a single combined
-  `plan_*.md` file** in `goals/` (goal section first, then plan — see
-  [Generated_Plans.md](Generated_Plans.md)). The topics considered are listed at the end of the reply.
+  plan → review → classify steps → detail each step (a function call per step) → respond, in one turn. One
+  visible answer (from ResponseBuilder), and **a single combined `plan_*.md` file** in `goals/` (goal
+  section, then plan, then a per-step detail section — see [Generated_Plans.md](Generated_Plans.md)). The
+  topics considered are listed at the end of the reply.
 - **A request needing clarification**: …→ clarify asks a question and **stops**. The user answers
   in their next prompt, which resumes at the Clarifier and continues to completion. The combined file keeps
   the request's run id, so it is recognizable as belonging to the request.
@@ -242,17 +286,19 @@ classified.
 
 > **Note on calls.** Only the model-driven roles make a `llama-server` call; the two computed roles
 > (TopicContextBuilder, StepReviewer) run in code. TopicContextBuilder still issues one `web_search` per
-> identified topic.
+> identified topic, and StepReviewer makes **one function call (a model turn) per plan step** to add its
+> detail section.
 
 ## Files written
 
 For a request, a **single** file is written to the `goals/` directory (configurable via
 `roleflow.goals-dir`):
 
-- `plan_<prefix>_<timestamp>.md` — the combined document: a `# Goal` section (from GoalBuilder) followed by
-  a `# Plan` section (from PlanBuilder, reviewed). The goal is no longer a separate file, so the directory
-  holds one file per request instead of two. See [Generated_Plans.md](Generated_Plans.md) for the full
-  format and rendering details.
+- `plan_<prefix>_<timestamp>.md` — the combined document: a `# Goal` section (from GoalBuilder), a `# Plan`
+  section (from PlanBuilder, reviewed), and a `# Step Details` section (one `## Step N: …` subsection per
+  step, added by the planner **functions** StepReviewer calls). The goal is no longer a separate file, so the
+  directory holds one file per request instead of two. See [Generated_Plans.md](Generated_Plans.md) for the
+  full format and rendering details.
 
 The `<prefix>` is a short, human-readable label summarizing the session's first prompt (e.g.
 `search-integers-counterexample`), kept unique across sessions by appending a number when needed

@@ -113,17 +113,31 @@ class RoleFlowConfigTest {
     }
 
     @Test
-    void shippedActiveConfigParsesIntoTenRoles() throws Exception {
+    void shippedActiveConfigParsesIntoFourteenRoles() throws Exception {
         Path path = Path.of("config/roleflow.active");
         RoleFlowConfig config = new RoleFlowConfig(RoleFlowConfig.parse(Files.readString(path)));
         List<Role> roles = config.roles();
 
-        assertEquals(10, roles.size(), "the shipped workflow should define ten roles");
+        assertEquals(14, roles.size(), "the shipped workflow should define fourteen roles");
         assertEquals(List.of("TopicAnalyzer", "TopicContextBuilder", "SignalOrRequest", "SignalResponse",
                         "HandleRequest", "GoalBuilder", "PlanBuilder", "PlanReviewer", "StepReviewer",
+                        "SubgoalPlanner", "ActionPlanner", "InformationPlanner", "DecisionPlanner",
                         "ResponseBuilder"),
                 roles.stream().map(Role::name).toList());
         assertEquals("TopicAnalyzer", config.firstRole().name(), "the run starts by analysing topics");
+
+        // StepReviewer calls a function per step category; each planner is a function that returns.
+        Role stepReviewer = config.byName("StepReviewer");
+        assertTrue(stepReviewer.hasCalls());
+        assertEquals("SubgoalPlanner", stepReviewer.functionFor("subgoal"));
+        assertEquals("ActionPlanner", stepReviewer.functionFor("action"));
+        assertEquals("InformationPlanner", stepReviewer.functionFor("request-for-information"));
+        assertEquals("DecisionPlanner", stepReviewer.functionFor("decision-point"));
+        assertEquals("ResponseBuilder", stepReviewer.resolve("continue"), "still transitions to the responder");
+        for (String fn : List.of("SubgoalPlanner", "ActionPlanner", "InformationPlanner", "DecisionPlanner")) {
+            assertTrue(config.byName(fn).isFunction(), fn + " should be a function");
+            assertEquals("return", config.byName(fn).resolve("anything"), fn + " returns to its caller");
+        }
 
         // TopicAnalyzer provides topics; TopicContextBuilder gathers their context deterministically.
         Role topicAnalyzer = config.byName("TopicAnalyzer");

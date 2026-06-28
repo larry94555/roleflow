@@ -27,6 +27,7 @@ class RoleFlowEngineTest {
      */
     private static class ScriptedModel implements RoleFlowEngine.ModelInvoker {
         final Map<String, Deque<String>> repliesByRole = new LinkedHashMap<>();
+        final Map<String, String> alwaysByRole = new LinkedHashMap<>();
         final List<String> rolesInvoked = new ArrayList<>();
         final List<String> promptsSeen = new ArrayList<>();
 
@@ -36,16 +37,28 @@ class RoleFlowEngineTest {
             return this;
         }
 
+        /** Always returns {@code reply} for {@code role}, however many times it is called (e.g. a function). */
+        ScriptedModel always(String role, String reply) {
+            alwaysByRole.put(role, reply);
+            return this;
+        }
+
         @Override
         public String invoke(String systemPrompt, String userPrompt, Integer maxTokens, Double temperature) {
             String role = roleFrom(systemPrompt);
             rolesInvoked.add(role);
             promptsSeen.add(userPrompt);
+            if (alwaysByRole.containsKey(role)) {
+                return alwaysByRole.get(role);
+            }
             Deque<String> queue = repliesByRole.get(role);
             if (queue == null || queue.isEmpty()) {
                 // Default: TopicAnalyzer finds no topics unless a test scripts it otherwise, so flow tests
                 // proceed straight to SignalOrRequest without having to script the topic step.
                 if ("TopicAnalyzer".equals(role)) return json("none", "no relevant topics");
+                // Default: the per-step planner functions return a short detail, so flow tests that reach
+                // StepReviewer do not have to script each function call (one per step).
+                if (role.endsWith("Planner")) return json("return", "detail for the step");
                 throw new IllegalStateException("no scripted reply for role " + role);
             }
             return queue.poll();
@@ -160,20 +173,27 @@ class RoleFlowEngineTest {
         assertTrue(findFile("plan_build-report").getFileName().toString().startsWith("plan_build-report"),
                 "plan file name should include the prompt-derived prefix");
 
-        // StepReviewer is computed by the engine, so it makes no model call (not in rolesInvoked).
+        // StepReviewer is computed by the engine (no model call); the per-step planner FUNCTIONS it calls
+        // are model-driven, so the main-flow roles run in order and the functions run in between.
+        List<String> mainFlow = model.rolesInvoked.stream().filter(r -> !r.endsWith("Planner")).toList();
         assertEquals(List.of("TopicAnalyzer", "SignalOrRequest", "HandleRequest", "GoalBuilder",
-                "PlanBuilder", "PlanReviewer", "ResponseBuilder"), model.rolesInvoked);
+                "PlanBuilder", "PlanReviewer", "ResponseBuilder"), mainFlow);
+        assertTrue(model.rolesInvoked.stream().anyMatch(r -> r.endsWith("Planner")),
+                "a planner function is called for each step");
         // The user prompt is unchanged across the whole auto-advancing run.
         assertTrue(model.promptsSeen.stream().allMatch("Build me a report"::equals));
         assertTrue(session.isIdle());
 
-        // Exactly ONE file, holding the goal section followed by the plan section.
+        // Exactly ONE file, holding the goal section, then the plan section, then per-step detail sections.
         assertEquals(1, fileCount(), "a request should create exactly one combined plan file");
         assertEquals(0, fileCount("goal_"), "the goal is no longer a separate file");
         String document = Files.readString(findFile("plan_"));
-        assertEquals(PlanDocument.compose("# Goal\nDeliver a report", VALID_PLAN_TEXT), document);
+        assertTrue(document.startsWith(PlanDocument.compose("# Goal\nDeliver a report", VALID_PLAN_TEXT)),
+                document);
         assertTrue(document.startsWith("# Goal\n\nDeliver a report"), document);
         assertTrue(document.contains("\n# Plan\n\n## Phase 1 - Preparation"), document);
+        assertTrue(document.contains("# Step Details"), "per-step detail sections are appended");
+        assertTrue(document.contains("## Step 1:"), document);
     }
 
     @Test
@@ -191,7 +211,8 @@ class RoleFlowEngineTest {
         String result = engine.run("Build me a report", null, null, null, model, null, "test");
 
         assertTrue(Files.exists(findFile("plan_")), "the plan file should be written from the message");
-        assertEquals(PlanDocument.compose("# Goal", VALID_PLAN_TEXT), Files.readString(findFile("plan_")));
+        assertTrue(Files.readString(findFile("plan_"))
+                .startsWith(PlanDocument.compose("# Goal", VALID_PLAN_TEXT)));
         // The single combined file is reported in the completed run.
         assertTrue(result.contains("Plan file: file:"), result);
         assertFalse(result.contains("Goal file: file:"), result);
@@ -334,20 +355,85 @@ class RoleFlowEngineTest {
                 "the system prompt used should be captured");
 
         assertTrue(hasType(events, AuditEvent.Type.RUN_STARTED));
-        // Eight roles run (TopicAnalyzer found no topics, so TopicContextBuilder is skipped): topic,
-        // classifier, clarifier, goal, plan, plan-review, step-review, response.
-        assertEquals(8, count(events, AuditEvent.Type.ROLE_STARTED), "one ROLE_STARTED per role");
+        // Counting only the MAIN-FLOW roles (ignoring the per-step planner functions): eight roles run
+        // (TopicAnalyzer found no topics, so TopicContextBuilder is skipped): topic, classifier, clarifier,
+        // goal, plan, plan-review, step-review, response.
+        assertEquals(8, mainFlowCount(events, AuditEvent.Type.ROLE_STARTED), "one ROLE_STARTED per role");
         // StepReviewer is computed, so it has no MODEL_RESPONSE — only the seven model-driven roles do.
-        assertEquals(7, count(events, AuditEvent.Type.MODEL_RESPONSE));
-        assertEquals(8, count(events, AuditEvent.Type.ROLE_RESULT), "each role's result is recorded");
+        assertEquals(7, mainFlowCount(events, AuditEvent.Type.MODEL_RESPONSE));
+        assertEquals(8, mainFlowCount(events, AuditEvent.Type.ROLE_RESULT), "each role's result is recorded");
         // The transition handling is called out, including the final "-> done".
         assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
                 && e.transition().contains("request") && e.transition().contains("HandleRequest")));
         assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
                 && e.transition().contains("done")));
-        // One combined plan file is written (the goal has no file of its own; the reviewer made no change).
-        assertEquals(1, count(events, AuditEvent.Type.ARTIFACT_WRITTEN));
+        // One combined plan file is written by the plan roles (the goal has no file of its own; the reviewer
+        // made no change). The per-step functions then rewrite the same file with their detail sections.
+        assertEquals(1, mainFlowCount(events, AuditEvent.Type.ARTIFACT_WRITTEN));
+        // The per-step planner functions are recorded in the audit trail just like roles.
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.ROLE_STARTED
+                && e.role().endsWith("Planner")), "function calls are audited like roles");
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.ARTIFACT_WRITTEN
+                && e.role().endsWith("Planner")), "functions write their step detail to the plan file");
         assertTrue(hasType(events, AuditEvent.Type.RUN_COMPLETED));
+    }
+
+    /** Counts audit events of a type contributed by the main-flow roles (excluding the planner functions). */
+    private static long mainFlowCount(List<AuditEvent> events, AuditEvent.Type type) {
+        return events.stream()
+                .filter(e -> e.type() == type && (e.role() == null || !e.role().endsWith("Planner")))
+                .count();
+    }
+
+    @Test
+    void stepReviewerCallsAFunctionPerStepThatAddsDetailSectionsToThePlanFile() throws Exception {
+        ScriptedModel model = new ScriptedModel()
+                .on("SignalOrRequest", json("request", "a request"))
+                .on("HandleRequest", json("clear", "Criteria"))
+                .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
+                .on("PlanBuilder", jsonWithArtifact("continue", "plan built", VALID_PLAN))
+                .on("PlanReviewer", json("ok", "no change"))
+                .on("ResponseBuilder", json("done", "Done."))
+                // The four planner functions are called once per matching step; give each a distinct detail.
+                .always("DecisionPlanner", json("return", "DECISION-DETAIL: use Python"))
+                .always("ActionPlanner", json("return", "ACTION-DETAIL: write code"))
+                .always("InformationPlanner", json("return", "INFO-DETAIL: request from web"));
+
+        engine.run("Build me a report", null, null, null, model, "PID-fn", "web");
+
+        String document = Files.readString(findFile("plan_"));
+        // The high-level plan is unchanged; a "# Step Details" section with one subsection per step is added.
+        assertTrue(document.contains("# Plan\n\n## Phase 1 - Preparation"), document);
+        assertTrue(document.contains("# Step Details"), document);
+        assertTrue(document.contains("## Step 1:"), document);
+        assertTrue(document.contains("decision-point"), document);   // category appears in a step heading
+        // The detail bodies come from the functions mapped to each step's category.
+        assertTrue(document.contains("DECISION-DETAIL: use Python"), document);
+        assertTrue(document.contains("ACTION-DETAIL: write code"), document);
+        assertTrue(document.contains("INFO-DETAIL: request from web"), document);
+
+        // Each function call is recorded in the audit trail like a role, and returns to its caller.
+        List<AuditEvent> events = audit.viewByPrompt("PID-fn").events();
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.ROLE_STARTED
+                && "DecisionPlanner".equals(e.role())));
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.MODEL_REQUEST
+                && "DecisionPlanner".equals(e.role())));
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.ROLE_RESULT
+                && "DecisionPlanner".equals(e.role())));
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.ARTIFACT_WRITTEN
+                && "DecisionPlanner".equals(e.role())));
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
+                && "DecisionPlanner".equals(e.role()) && e.transition().contains("return -> StepReviewer")),
+                "a function returns to its caller rather than transitioning onward");
+
+        // The function's prompt tells the model to describe the step directly, not narrate "The first step is".
+        AuditEvent functionRequest = events.stream()
+                .filter(e -> e.type() == AuditEvent.Type.MODEL_REQUEST && "DecisionPlanner".equals(e.role()))
+                .findFirst().orElseThrow();
+        assertTrue(functionRequest.systemPrompt().contains("The first step is"),
+                "the prompt should explicitly steer away from \"The first step is\" narration");
+        assertTrue(functionRequest.systemPrompt().contains("Describe the step DIRECTLY"),
+                functionRequest.systemPrompt());
     }
 
     @Test
@@ -403,15 +489,20 @@ class RoleFlowEngineTest {
         // The reviewer re-reviews its own updated plan: PlanReviewer ran twice with no user input.
         assertEquals(2, model.rolesInvoked.stream().filter("PlanReviewer"::equals).count());
         // The plan file holds the reviewer's updated version (same file, overwritten).
-        assertEquals(PlanDocument.compose("# Goal", VALID_PLAN_V2_TEXT), Files.readString(findFile("plan_")));
+        assertTrue(Files.readString(findFile("plan_"))
+                .startsWith(PlanDocument.compose("# Goal", VALID_PLAN_V2_TEXT)));
 
         AuditView view = audit.viewByPrompt("PID-rev");
         assertTrue(view.events().stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
                 && e.transition().contains("change") && e.transition().contains("PlanReviewer")),
                 "the auto re-review transition should be in the audit");
-        // Two writes are logged: the original plan, then the reviewer's updated plan (the goal has no file).
-        assertEquals(2, count(view.events(), AuditEvent.Type.ARTIFACT_WRITTEN));
-        // On disk there is one file (the plan was overwritten in place).
+        // Two writes by the plan roles: the original plan, then the reviewer's updated plan (the goal has no
+        // file). The step-detail functions rewrite the same file afterwards, so count only the plan roles.
+        long planRoleWrites = view.events().stream()
+                .filter(e -> e.type() == AuditEvent.Type.ARTIFACT_WRITTEN && !e.role().endsWith("Planner"))
+                .count();
+        assertEquals(2, planRoleWrites);
+        // On disk there is one file (the plan and its step details were overwritten in place).
         assertEquals(1, fileCount());
     }
 
@@ -429,7 +520,8 @@ class RoleFlowEngineTest {
         engine.run("Build me a report", null, null, null, model, null, "test");
 
         // Conditional output: a "no change" review must NOT overwrite the plan with its message.
-        assertEquals(PlanDocument.compose("# Goal", VALID_PLAN_TEXT), Files.readString(findFile("plan_")));
+        assertTrue(Files.readString(findFile("plan_"))
+                .startsWith(PlanDocument.compose("# Goal", VALID_PLAN_TEXT)));
     }
 
     @Test
@@ -451,7 +543,8 @@ class RoleFlowEngineTest {
         // PlanBuilder was invoked twice: rejected once, then accepted.
         assertEquals(2, model.rolesInvoked.stream().filter("PlanBuilder"::equals).count());
         // Only the valid plan was written (the bad first attempt never reached the file).
-        assertEquals(PlanDocument.compose("# Goal", VALID_PLAN_TEXT), Files.readString(findFile("plan_")));
+        assertTrue(Files.readString(findFile("plan_"))
+                .startsWith(PlanDocument.compose("# Goal", VALID_PLAN_TEXT)));
 
         List<AuditEvent> events = audit.viewByPrompt("PID-val").events();
         assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.VALIDATION
@@ -496,10 +589,14 @@ class RoleFlowEngineTest {
 
         engine.run("Build me a report", null, null, null, model, "PID-echo", "web");
 
-        // Only the original plan file was written (once) — the goal is not a separate file, and the
-        // reviewer's identical echo must not trigger a rewrite.
-        assertEquals(1, count(audit.viewByPrompt("PID-echo").events(), AuditEvent.Type.ARTIFACT_WRITTEN));
-        assertEquals(PlanDocument.compose("# Goal", VALID_PLAN_TEXT), Files.readString(findFile("plan_")));
+        // Only the plan roles' single write counts — the goal is not a separate file, and the reviewer's
+        // identical echo must not trigger a rewrite (the step-detail functions rewrite the file separately).
+        long planRoleWrites = audit.viewByPrompt("PID-echo").events().stream()
+                .filter(e -> e.type() == AuditEvent.Type.ARTIFACT_WRITTEN && !e.role().endsWith("Planner"))
+                .count();
+        assertEquals(1, planRoleWrites);
+        assertTrue(Files.readString(findFile("plan_"))
+                .startsWith(PlanDocument.compose("# Goal", VALID_PLAN_TEXT)));
     }
 
     @Test
@@ -517,9 +614,11 @@ class RoleFlowEngineTest {
 
         engine.run("Build me a report", null, null, null, model, "PID-fallback", "web");
 
-        // StepReviewer is computed (no model call), so it is not in rolesInvoked.
+        // StepReviewer is computed (no model call); ignoring the per-step planner functions, the main flow
+        // still reaches ResponseBuilder via the default transition.
+        List<String> mainFlow = model.rolesInvoked.stream().filter(r -> !r.endsWith("Planner")).toList();
         assertEquals(List.of("TopicAnalyzer", "SignalOrRequest", "HandleRequest", "GoalBuilder",
-                "PlanBuilder", "PlanReviewer", "ResponseBuilder"), model.rolesInvoked);
+                "PlanBuilder", "PlanReviewer", "ResponseBuilder"), mainFlow);
         assertTrue(session.isIdle(), "the run should complete only after ResponseBuilder");
         AuditView view = audit.viewByPrompt("PID-fallback");
         assertTrue(view.events().stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION

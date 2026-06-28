@@ -1,5 +1,6 @@
 package com.example.roleflow;
 
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -15,6 +16,7 @@ final class PlanDocument {
 
     static final String GOAL_HEADING = "# Goal";
     static final String PLAN_HEADING = "# Plan";
+    static final String STEP_DETAILS_HEADING = "# Step Details";
 
     /** The plan's first phase header, however the model styled it (e.g. "# Phase 1", "## Phase 1 - ..."). */
     private static final Pattern FIRST_PHASE = Pattern.compile("(?im)^\\s*#*\\s*phase\\s*1\\b.*$");
@@ -27,6 +29,15 @@ final class PlanDocument {
      * {@code # Plan}.
      */
     static String compose(String goal, String plan) {
+        return compose(goal, plan, List.of());
+    }
+
+    /**
+     * As {@link #compose(String, String)}, additionally appending a {@code # Step Details} section made of the
+     * given per-step detail sections (each a {@code ## Step N: ...} subsection produced by a function). When
+     * there are no step sections, the document is identical to the two-argument form.
+     */
+    static String compose(String goal, String plan, List<String> stepSections) {
         String goalBody = stripLeadingHeading(goal == null ? "" : goal.strip(), "goal");
         String planBody = planSection(plan == null ? "" : plan.strip());
 
@@ -35,6 +46,14 @@ final class PlanDocument {
             document.append(goalBody).append("\n\n");
         }
         document.append(PLAN_HEADING).append("\n\n").append(planBody);
+        if (stepSections != null && !stepSections.isEmpty()) {
+            document.append("\n\n").append(STEP_DETAILS_HEADING);
+            for (String section : stepSections) {
+                if (section != null && !section.isBlank()) {
+                    document.append("\n\n").append(section.strip());
+                }
+            }
+        }
         return document.toString().strip();
     }
 
