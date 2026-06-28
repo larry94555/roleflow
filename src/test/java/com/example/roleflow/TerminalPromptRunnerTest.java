@@ -16,10 +16,12 @@ import static org.springframework.test.util.ReflectionTestUtils.setField;
 
 class TerminalPromptRunnerTest {
 
-    /** Stand-in conversation service that records prompts and can simulate failure. */
+    /** Stand-in conversation service that records prompts/audit ids and can simulate failure. */
     private static class StubConversationService extends ConversationService {
         final List<String> prompts = new ArrayList<>();
+        final List<String> auditIds = new ArrayList<>();
         boolean fail;
+        String response; // when set, returned verbatim (e.g. to include a file link)
 
         StubConversationService() {
             super(null, null, null, null, null, 0, "");
@@ -29,10 +31,13 @@ class TerminalPromptRunnerTest {
         public String reply(String systemOverride, String userPrompt, Integer maxTokens, Double temperature,
                             String auditId, String source) {
             prompts.add(userPrompt);
+            auditIds.add(auditId);
             if (fail) throw new IllegalStateException("server down");
-            return "echo:" + userPrompt;
+            return response != null ? response : "echo:" + userPrompt;
         }
     }
+
+    private static final char ESC = (char) 27;
 
     private String runLoop(TerminalPromptRunner runner, String input) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -81,6 +86,37 @@ class TerminalPromptRunnerTest {
         String output = runLoop(runner, "boom\n");
 
         assertTrue(output.contains("[error] server down"));
+    }
+
+    @Test
+    void rendersFileAndAuditLinksAsTerminalHyperlinks() {
+        StubConversationService service = new StubConversationService();
+        service.response = "Done.\n\nFiles created:\n- Plan file: file:///C:/x/goals/plan_abc.md";
+        TerminalPromptRunner runner = new TerminalPromptRunner(service);
+        runner.setAuditIds(() -> "PID-7");
+
+        String output = runLoop(runner, "go\n");
+
+        // The plan file link is an OSC 8 hyperlink to the server's rendered view.
+        assertTrue(output.contains(ESC + "]8;;http://localhost:8080/goals/plan_abc.md" + ESC + "\\"), output);
+        // The prompt's audit trail is offered as a clickable link to the audit web page.
+        assertTrue(output.contains("http://localhost:8080/audit.html?prompt=PID-7"), output);
+        // The same audit id is passed through to the conversation service for correlation.
+        assertEquals(List.of("PID-7"), service.auditIds);
+    }
+
+    @Test
+    void opensTheAuditPageOnceInTheBrowserPerSession() {
+        StubConversationService service = new StubConversationService();
+        // Auto-open is off in the test convenience constructor; turn it on for this test.
+        TerminalPromptRunner runner = new TerminalPromptRunner(service, 8080, "", true, true);
+        List<String> opened = new ArrayList<>();
+        runner.setBrowser(opened::add);
+
+        runLoop(runner, "first\nsecond\n");
+
+        assertEquals(1, opened.size(), "the browser should open once per session, not per prompt");
+        assertTrue(opened.get(0).contains("/audit.html?prompt="), opened.toString());
     }
 
     @Test

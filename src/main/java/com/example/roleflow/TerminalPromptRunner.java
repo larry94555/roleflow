@@ -1,5 +1,6 @@
 package com.example.roleflow;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
@@ -7,22 +8,59 @@ import org.springframework.stereotype.Component;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * Reads prompts interactively from the terminal (stdin) and prints the model's reply. Runs on a daemon
  * thread so it never blocks application startup, and is disabled automatically during tests via
  * {@code roleflow.terminal.enabled=false}. The {@link #loop} method is package-private so it can be
  * driven by a unit test with in-memory streams.
+ *
+ * <p>To bring the command line closer to the web UI, file links in the reply are rendered as clickable
+ * terminal hyperlinks pointing at the server's rendered view, and each prompt's audit trail is offered as a
+ * clickable link (and opened once per session in the browser, like the web page does).
  */
 @Component
 public class TerminalPromptRunner implements CommandLineRunner {
     private final ConversationService conversation;
+    private final TerminalHyperlinks links;
+    private final boolean openAudit;
+
+    /** How a prompt's audit page is opened in the browser; overridable so tests don't spawn a browser. */
+    private Consumer<String> browser = TerminalPromptRunner::openInBrowser;
+    /** Source of per-prompt audit ids; overridable for deterministic tests. */
+    private Supplier<String> auditIds = () -> UUID.randomUUID().toString();
+    private boolean auditOpened;
 
     @Value("${roleflow.terminal.enabled:true}") private boolean enabled = true;
 
-    public TerminalPromptRunner(ConversationService conversation) {
+    @Autowired
+    public TerminalPromptRunner(ConversationService conversation,
+                                @Value("${server.port:8080}") int port,
+                                @Value("${roleflow.terminal.base-url:}") String baseUrl,
+                                @Value("${roleflow.terminal.hyperlinks:true}") boolean hyperlinks,
+                                @Value("${roleflow.terminal.open-audit:true}") boolean openAudit) {
         this.conversation = conversation;
+        String resolved = baseUrl == null || baseUrl.isBlank() ? "http://localhost:" + port : baseUrl;
+        this.links = new TerminalHyperlinks(resolved, hyperlinks);
+        this.openAudit = openAudit;
+    }
+
+    /** Test convenience: hyperlinks on, browser auto-open off (so tests never spawn a browser). */
+    TerminalPromptRunner(ConversationService conversation) {
+        this(conversation, 8080, "", true, false);
+    }
+
+    void setBrowser(Consumer<String> browser) {
+        this.browser = browser;
+    }
+
+    void setAuditIds(Supplier<String> auditIds) {
+        this.auditIds = auditIds;
     }
 
     @Override
@@ -36,8 +74,8 @@ public class TerminalPromptRunner implements CommandLineRunner {
     }
 
     /**
-     * Prompt/response loop. Reads one line at a time, sends it to llama-server, and prints the reply.
-     * Stops on end-of-input or when the user types {@code exit} or {@code quit}.
+     * Prompt/response loop. Reads one line at a time, sends it to llama-server, and prints the reply with
+     * clickable file/audit links. Stops on end-of-input or when the user types {@code exit} or {@code quit}.
      */
     void loop(BufferedReader in, PrintStream out) {
         out.println("RoleFlow terminal ready. Type a prompt and press Enter (type 'exit' or 'quit' to stop).");
@@ -51,8 +89,12 @@ public class TerminalPromptRunner implements CommandLineRunner {
                     break;
                 }
                 if (!prompt.isEmpty()) {
+                    String auditId = auditIds.get();
                     try {
-                        out.println(conversation.reply(null, prompt, null, null, null, "terminal"));
+                        String reply = conversation.reply(null, prompt, null, null, auditId, "terminal");
+                        out.println(links.linkifyFiles(reply));
+                        out.println(links.auditLine(auditId));
+                        openAuditOnce(auditId);
                     } catch (Exception e) {
                         out.println("[error] " + e.getMessage());
                     }
@@ -62,6 +104,28 @@ public class TerminalPromptRunner implements CommandLineRunner {
             }
         } catch (Exception e) {
             out.println("[error] terminal input closed: " + e.getMessage());
+        }
+    }
+
+    /** Opens the audit page in the browser once per session (like the web page), if enabled. */
+    private void openAuditOnce(String auditId) {
+        if (openAudit && !auditOpened) {
+            auditOpened = true;
+            browser.accept(links.auditUrl(auditId));
+        }
+    }
+
+    /** Best-effort: open {@code url} in the default browser; a no-op when that is unavailable (headless). */
+    private static void openInBrowser(String url) {
+        try {
+            if (java.awt.Desktop.isDesktopSupported()) {
+                java.awt.Desktop desktop = java.awt.Desktop.getDesktop();
+                if (desktop.isSupported(java.awt.Desktop.Action.BROWSE)) {
+                    desktop.browse(URI.create(url));
+                }
+            }
+        } catch (Throwable ignored) {
+            // No desktop/browser available — the printed link is the fallback.
         }
     }
 }

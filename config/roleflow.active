@@ -35,6 +35,9 @@
 #                "Iteration: 3"). Once the role has run that many times, the engine forces the role's
 #                "limit" transition instead of its normal one, so a refinement loop cannot run forever. The
 #                count is recorded in the audit trail.
+#   Classifies:  optional. For a classifying function, the comma-separated category phrases it chooses from
+#                (e.g. "write code, write and run code, invoke a tool, invoke a service"). The engine detects
+#                which category the function's reply states and records it in the audit trail.
 #   Provides:    (also) "Provides: todos" — the engine parses the reply (artifact, one step per line, each
 #                prefixed "ambiguous:" or "too high level:") into the session's TODO list for PlanDetailer.
 #   Transition:  how to choose the next role from the model's "decision" (or the synthetic "limit" decision
@@ -121,10 +124,13 @@ Action:
     "decision" to "unclear".
   - If the user has cancelled or withdrawn the request, acknowledge that and set "decision"
     to "cancelled".
+  Ask AT MOST ONE clarifying question. If the user has already answered an earlier clarifying question
+  (even with a simple "yes"), treat the criteria as clear and proceed — do NOT ask the same question again.
   Put your restated criteria, or your clarifying question, or your acknowledgement in "message".
   Leave "artifact" empty.
 Output: none
-Transition: clear -> GoalBuilder, unclear -> await, cancelled -> done
+Iteration: 2
+Transition: clear -> GoalBuilder, unclear -> await, cancelled -> done, limit -> GoalBuilder
 
 6. GoalBuilder
 Role: Goal author
@@ -242,61 +248,71 @@ Transition: PlanDetailReviewer
 10. SubgoalPlanner
 Role: Function
 Action:
-  You are detailing ONE plan step that was classified as a "subgoal" (it needs its own breakdown). Build a
-  short set of high-level SUBSTEPS that together satisfy this step, organised as the same four phases the
-  plan uses:
+  You are detailing ONLY the single step shown at the end of this prompt (classified as a "subgoal").
+  Ignore the other steps. Build a short set of high-level SUBSTEPS that together satisfy THIS step, organised
+  as the same four phases the plan uses:
     Phase 1 - Preparation (write "no preparation substeps." if none are needed)
     Phase 2 - Action
     Phase 3 - Verification
     Phase 4 - Next substeps
   Under each phase, write at least one concrete substep as a "- " bullet. Put ONLY the four-phase breakdown
-  in "message" — do not narrate or refer to step ordering (never write "The first step is ..."). Set
-  "decision" to "return".
+  in "message" — do not narrate, do not copy code, and never write "The first step is ...". Set "decision"
+  to "return".
 Output: none
-Reads: plan
 Kind: function
 Transition: return
 
 11. ActionPlanner
 Role: Function
 Action:
-  You are detailing ONE plan step that was classified as an "action". Classify the action as EXACTLY one of:
-  "write code" (code is only written), "write and run code" (the written code is also run as part of the
-  step), "invoke a tool", or "invoke a service". If more than one tool would be needed, treat it as
-  "write code". Answer in ONE short sentence: the chosen category and a brief reason, phrased about THIS
-  step. Do not narrate the plan or refer to step ordering (never write "The first step is ..."). Put that
-  one-line answer in "message". Set "decision" to "return".
+  You are classifying ONLY the single step shown at the end of this prompt (classified as an "action").
+  Ignore the other steps and any code in the context. Choose EXACTLY one category:
+    write code            -> code is only written
+    write and run code    -> the written code is also run as part of the step
+    invoke a tool         -> one existing tool is called
+    invoke a service      -> an external service is called
+  If more than one tool would be needed, choose "write code".
+  Your "message" MUST START with the chosen category text EXACTLY as written above, with NO quotation marks
+  around it, then a colon and a brief reason about THIS step. Example message:
+    write and run code: the script is executed to produce the result.
+  Set "decision" to "return".
 Output: none
-Reads: plan
 Kind: function
+Classifies: write and run code, write code, invoke a tool, invoke a service
 Transition: return
 
 12. InformationPlanner
 Role: Function
 Action:
-  You are detailing ONE plan step that was classified as a "request-for-information". Classify how the
-  information will be obtained as EXACTLY one of: "request from web" (a straightforward web search),
-  "research on web" (may need multiple web interactions over time; the worst case), "process through code"
-  (answer computed by writing and running code locally), "process through a tool" (answer comes from an
-  existing tool), or "web and code" (needs a combination). Answer in ONE short sentence: the chosen category
-  and a brief reason, phrased about THIS step. Do not narrate the plan or refer to step ordering (never write
-  "The first step is ..."). Put that one-line answer in "message". Set "decision" to "return".
+  You are classifying ONLY the single step shown at the end of this prompt (classified as a
+  "request-for-information"). Ignore the other steps and any code in the context. Choose EXACTLY one
+  category for how the information is obtained:
+    request from web      -> a single straightforward web search
+    research on web        -> may need multiple web interactions over time (the worst case)
+    process through code  -> the answer is computed by writing and running code locally
+    process through a tool -> the answer comes from an existing tool
+    web and code          -> needs a combination of the above
+  Your "message" MUST START with the chosen category text EXACTLY as written above, with NO quotation marks
+  around it, then a colon and a brief reason about THIS step. Example message:
+    process through code: the primes are computed by a short program.
+  Set "decision" to "return".
 Output: none
-Reads: plan
 Kind: function
+Classifies: request from web, research on web, process through code, process through a tool, web and code
 Transition: return
 
 13. DecisionPlanner
 Role: Function
 Action:
-  You are detailing ONE plan step that was classified as a "decision-point". Either state the decision made
-  (e.g. "coding will use Python") or the method that will be used to make it: "will ask user", "request
-  information", or "do tests". Answer in ONE short sentence about THIS step. Do not narrate the plan or refer
-  to step ordering (never write "The first step is ..."). Put that one-line answer in "message". Set
-  "decision" to "return".
+  You are detailing ONLY the single step shown at the end of this prompt (classified as a "decision-point").
+  Ignore the other steps and any code in the context. State, in ONE short sentence, EITHER the decision made
+  for THIS step (e.g. "use Python") OR, if it cannot be decided yet, the method to make it — choose one of:
+    will ask user, request information, do tests.
+  Your "message" MUST START with that decision or method, with NO quotation marks around it. Do not narrate
+  the plan and never write "The first step is ...". Set "decision" to "return".
 Output: none
-Reads: plan
 Kind: function
+Classifies: will ask user, request information, do tests
 Transition: return
 
 14. PlanDetailReviewer
