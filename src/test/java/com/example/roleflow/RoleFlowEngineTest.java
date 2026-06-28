@@ -114,6 +114,13 @@ class RoleFlowEngineTest {
         }
     }
 
+    private long fileCount(String prefix) throws Exception {
+        if (!Files.exists(goalsDir)) return 0;
+        try (var stream = Files.list(goalsDir)) {
+            return stream.filter(p -> p.getFileName().toString().startsWith(prefix)).count();
+        }
+    }
+
     @Test
     void signalRunsClassifierThenResponderAndWritesNoFiles() throws Exception {
         ScriptedModel model = new ScriptedModel()
@@ -141,17 +148,17 @@ class RoleFlowEngineTest {
 
         String result = engine.run("Build me a report", null, null, null, model, null, "test");
 
-        // The model's confirmation comes first, then the engine appends the exact file links.
+        // The model's confirmation comes first, then the engine appends the exact file link.
         assertTrue(result.startsWith("Done: goal and plan created."), result);
         assertTrue(result.contains("Files created:"), result);
-        assertTrue(result.contains("Goal file: file:"), "the goal file URL should be reported");
-        assertTrue(result.contains("Plan file: file:"), "the plan file URL should be reported");
-        assertTrue(result.contains("goal_") && result.contains("plan_"));
-        // The file *contents* must not be pasted into the response (the bug this fixes).
-        assertFalse(result.contains("Deliver a report"), "must report locations, not file contents");
-        // The file names carry a human-readable prefix derived from the initial prompt.
-        assertTrue(findFile("goal_build-report").getFileName().toString().startsWith("goal_build-report"),
-                "goal file name should include the prompt-derived prefix");
+        assertTrue(result.contains("Plan file: file:"), "the single plan file URL should be reported");
+        assertFalse(result.contains("Goal file: file:"), "there is no separate goal file");
+        assertTrue(result.contains("plan_"));
+        // The file *contents* must not be pasted into the response.
+        assertFalse(result.contains("Deliver a report"), "must report the location, not file contents");
+        // The file name carries a human-readable prefix derived from the initial prompt.
+        assertTrue(findFile("plan_build-report").getFileName().toString().startsWith("plan_build-report"),
+                "plan file name should include the prompt-derived prefix");
 
         // StepReviewer is computed by the engine, so it makes no model call (not in rolesInvoked).
         assertEquals(List.of("TopicAnalyzer", "SignalOrRequest", "HandleRequest", "GoalBuilder",
@@ -160,10 +167,13 @@ class RoleFlowEngineTest {
         assertTrue(model.promptsSeen.stream().allMatch("Build me a report"::equals));
         assertTrue(session.isIdle());
 
-        assertEquals(2, fileCount(), "a request should create exactly a goal file and a plan file");
-        assertTrue(Files.exists(findFile("goal_")), "goal file should exist");
-        assertTrue(Files.exists(findFile("plan_")), "plan file should exist");
-        assertEquals("# Goal\nDeliver a report", Files.readString(findFile("goal_")));
+        // Exactly ONE file, holding the goal section followed by the plan section.
+        assertEquals(1, fileCount(), "a request should create exactly one combined plan file");
+        assertEquals(0, fileCount("goal_"), "the goal is no longer a separate file");
+        String document = Files.readString(findFile("plan_"));
+        assertEquals(PlanDocument.compose("# Goal\nDeliver a report", VALID_PLAN_TEXT), document);
+        assertTrue(document.startsWith("# Goal\n\nDeliver a report"), document);
+        assertTrue(document.contains("\n# Plan\n\n## Phase 1 - Preparation"), document);
     }
 
     @Test
@@ -181,9 +191,10 @@ class RoleFlowEngineTest {
         String result = engine.run("Build me a report", null, null, null, model, null, "test");
 
         assertTrue(Files.exists(findFile("plan_")), "the plan file should be written from the message");
-        assertEquals(VALID_PLAN_TEXT, Files.readString(findFile("plan_")));
-        // Both files are reported in the completed run.
-        assertTrue(result.contains("Goal file: file:") && result.contains("Plan file: file:"), result);
+        assertEquals(PlanDocument.compose("# Goal", VALID_PLAN_TEXT), Files.readString(findFile("plan_")));
+        // The single combined file is reported in the completed run.
+        assertTrue(result.contains("Plan file: file:"), result);
+        assertFalse(result.contains("Goal file: file:"), result);
     }
 
     @Test
@@ -263,7 +274,7 @@ class RoleFlowEngineTest {
         assertTrue(result.startsWith("All set."), result);
         assertTrue(result.contains("Files created:") && result.contains("file:"), result);
         assertTrue(session.isIdle());
-        assertEquals(2, fileCount());
+        assertEquals(1, fileCount(), "one combined goal-and-plan file");
     }
 
     @Test
@@ -334,8 +345,8 @@ class RoleFlowEngineTest {
                 && e.transition().contains("request") && e.transition().contains("HandleRequest")));
         assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
                 && e.transition().contains("done")));
-        // Goal and plan artifacts are recorded (the reviewer made no change, so it wrote nothing).
-        assertEquals(2, count(events, AuditEvent.Type.ARTIFACT_WRITTEN));
+        // One combined plan file is written (the goal has no file of its own; the reviewer made no change).
+        assertEquals(1, count(events, AuditEvent.Type.ARTIFACT_WRITTEN));
         assertTrue(hasType(events, AuditEvent.Type.RUN_COMPLETED));
     }
 
@@ -392,16 +403,16 @@ class RoleFlowEngineTest {
         // The reviewer re-reviews its own updated plan: PlanReviewer ran twice with no user input.
         assertEquals(2, model.rolesInvoked.stream().filter("PlanReviewer"::equals).count());
         // The plan file holds the reviewer's updated version (same file, overwritten).
-        assertEquals(VALID_PLAN_V2_TEXT, Files.readString(findFile("plan_")));
+        assertEquals(PlanDocument.compose("# Goal", VALID_PLAN_V2_TEXT), Files.readString(findFile("plan_")));
 
         AuditView view = audit.viewByPrompt("PID-rev");
         assertTrue(view.events().stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
                 && e.transition().contains("change") && e.transition().contains("PlanReviewer")),
                 "the auto re-review transition should be in the audit");
-        // Three writes are logged: the goal, the original plan, and the reviewer's updated plan.
-        assertEquals(3, count(view.events(), AuditEvent.Type.ARTIFACT_WRITTEN));
-        // On disk there are two files (the plan was overwritten in place).
-        assertEquals(2, fileCount());
+        // Two writes are logged: the original plan, then the reviewer's updated plan (the goal has no file).
+        assertEquals(2, count(view.events(), AuditEvent.Type.ARTIFACT_WRITTEN));
+        // On disk there is one file (the plan was overwritten in place).
+        assertEquals(1, fileCount());
     }
 
     @Test
@@ -418,7 +429,7 @@ class RoleFlowEngineTest {
         engine.run("Build me a report", null, null, null, model, null, "test");
 
         // Conditional output: a "no change" review must NOT overwrite the plan with its message.
-        assertEquals(VALID_PLAN_TEXT, Files.readString(findFile("plan_")));
+        assertEquals(PlanDocument.compose("# Goal", VALID_PLAN_TEXT), Files.readString(findFile("plan_")));
     }
 
     @Test
@@ -440,7 +451,7 @@ class RoleFlowEngineTest {
         // PlanBuilder was invoked twice: rejected once, then accepted.
         assertEquals(2, model.rolesInvoked.stream().filter("PlanBuilder"::equals).count());
         // Only the valid plan was written (the bad first attempt never reached the file).
-        assertEquals(VALID_PLAN_TEXT, Files.readString(findFile("plan_")));
+        assertEquals(PlanDocument.compose("# Goal", VALID_PLAN_TEXT), Files.readString(findFile("plan_")));
 
         List<AuditEvent> events = audit.viewByPrompt("PID-val").events();
         assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.VALIDATION
@@ -485,9 +496,10 @@ class RoleFlowEngineTest {
 
         engine.run("Build me a report", null, null, null, model, "PID-echo", "web");
 
-        // Only the goal and the original plan were written — not the reviewer's identical echo.
-        assertEquals(2, count(audit.viewByPrompt("PID-echo").events(), AuditEvent.Type.ARTIFACT_WRITTEN));
-        assertEquals(VALID_PLAN_TEXT, Files.readString(findFile("plan_")));
+        // Only the original plan file was written (once) — the goal is not a separate file, and the
+        // reviewer's identical echo must not trigger a rewrite.
+        assertEquals(1, count(audit.viewByPrompt("PID-echo").events(), AuditEvent.Type.ARTIFACT_WRITTEN));
+        assertEquals(PlanDocument.compose("# Goal", VALID_PLAN_TEXT), Files.readString(findFile("plan_")));
     }
 
     @Test

@@ -66,4 +66,15 @@ class SkillRegistryTest {
         // It must push back on treating "no counterexample found" as a failure to retry.
         assertTrue(text.contains("not a failure") || text.contains("not call for"), mathematics.instructions());
     }
+
+    @Test
+    void theMathematicsSkillSaysAFoundCounterexampleIsNothingToHandle() {
+        Skill mathematics = new SkillRegistry(List.of(new MathematicsSkillProvider())).get("mathematics");
+
+        String text = mathematics.instructions().toLowerCase();
+        // A found counterexample is itself the result — there is nothing to "handle".
+        assertTrue(text.contains("handle"), mathematics.instructions());
+        assertTrue(text.contains("report"), mathematics.instructions());
+        assertTrue(text.contains("nothing to"), mathematics.instructions());
+    }
 }

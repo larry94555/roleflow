@@ -140,6 +140,18 @@ Action:
     - Phase 3: how to confirm the actions completed and the goal was met.
     - Phase 4: any follow-up, retry, or future check for an ongoing goal.
 
+  CHANGEABLE vs INFORMATION-ONLY state. Before writing Phase 3 and Phase 4, decide for each result whether it
+  is a CHANGEABLE state (something the plan can act on, set, or modify — e.g. a file that can be created, a
+  backup that can be scheduled) or an INFORMATION-ONLY state (a fact that can only be observed and reported,
+  e.g. whether a counterexample to a conjecture exists). Verification and Next steps must NEVER try to CHANGE
+  an information-only state:
+    - Phase 3 (Verification) only CONFIRMS and REPORTS. To verify an information-only result, confirm the work
+      ran and report what it found — never attempt to alter the finding, "handle" it, or make it come out a
+      particular way.
+    - Phase 4 (Next steps) may only propose steps that change a CHANGEABLE state. If the result is
+      information-only, there is nothing to retry, fix, extend, or re-run to change it; at most record or
+      report it. Do NOT add follow-ups that treat an information-only result as a problem to resolve.
+
   Phase 1 MUST identify the assumptions and decision points implied by the request. For example, when the
   request is to write an application, the programming language is a decision point. For each one, either
   make the decision now or, if it needs time or research, add a step to figure it out:
@@ -170,12 +182,19 @@ Action:
   You are also given a "Topic context" section (gathered from the web for each identified topic). Use it to
   sanity-check the plan against how the topic ACTUALLY works, and flag any step that reflects a
   misunderstanding. For example, finding a counterexample to a mathematical conjecture is itself a complete,
-  valid result — it is NOT a defect to fix, retry, or "research further". A step that treats it that way is
-  out of place.
+  valid result — it is NOT a defect to fix, retry, "handle", or "research further". A step that treats it that
+  way is out of place.
+  Also check the CHANGEABLE vs INFORMATION-ONLY distinction in Phase 3 (Verification) and Phase 4 (Next
+  steps). An information-only result is a fact that can only be observed and reported (e.g. whether a
+  counterexample exists); a changeable result is one the plan can act on or modify (e.g. a file to create).
+  Verification and Next steps must only confirm/report or act on changeable state — any step that tries to
+  CHANGE, "handle", fix, retry, or re-run an information-only result to make it come out differently is out
+  of place.
   Decide:
   - If any of the four phase headers is missing, a phase has no concrete step, Phase 1 does not call out
     the assumptions and decision points, the plan merely restates the goal (e.g. it contains a "# Goal"
-    heading), or a step is out of place / contradicts the topic context, then the plan is WRONG.
+    heading), or a step is out of place / contradicts the topic context / tries to change an information-only
+    state, then the plan is WRONG.
     Set "decision" to "change", rewrite the FULL corrected plan into "artifact" (removing or fixing the
     out-of-place steps and adding any missing assumptions/decisions to Phase 1), and put a one-sentence
     justification in "message".
@@ -202,8 +221,8 @@ Transition: ResponseBuilder
 Role: Final responder
 Action:
   Tell the user, in one or two sentences, that their request has been turned into a goal and a plan
-  (reviewed) and that both files were created successfully.
-  Do NOT paste the file contents, and do NOT write the file paths yourself: the exact file links are
+  (reviewed), saved together in a single plan file.
+  Do NOT paste the file contents, and do NOT write the file path yourself: the exact file link is
   appended automatically after your message, so just give the friendly confirmation.
   Put that confirmation in "message". Set "decision" to "done". Leave "artifact" empty.
 Output: none
