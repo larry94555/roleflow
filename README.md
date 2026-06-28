@@ -205,7 +205,7 @@ of **roles** defined in [`config/roleflow.active`](config/roleflow.active). Each
 that wraps the (unchanging) user prompt so the model performs one job, then a **transition** decides which
 role runs next. The same workflow is used for both terminal and web prompts.
 
-The shipped workflow has fourteen roles (ten in the main flow, plus four **functions**):
+The shipped workflow has sixteen roles (twelve in the main flow, plus four **functions**):
 
 1. **TopicAnalyzer** — identify the **topics** relevant to the prompt (e.g. mathematics, programming),
    at most three, or none for a very general prompt. The topics are recorded in the **audit trail** and
@@ -231,10 +231,16 @@ The shipped workflow has fourteen roles (ten in the main flow, plus four **funct
    *subgoal* (computed in code), then **call a function for each step** to add a detail section to the plan
    file. The classifications and each function call are recorded in the **audit trail**.
    - **SubgoalPlanner / ActionPlanner / InformationPlanner / DecisionPlanner** *(functions)* — one per step
-     category. Unlike the other roles, a **function** is *called* and *returns* to StepReviewer rather than
+     category. Unlike the other roles, a **function** is *called* and *returns* to its caller rather than
      being a transition point. Each adds a `## Step N: …` detail section to the plan file. See
      [Generated_Plans.md](Generated_Plans.md).
-10. **ResponseBuilder** — confirm the goal and plan were created; the engine then appends the exact file
+10. **PlanDetailReviewer** — review the goal, plan, and step details for **completeness**. If anything is
+    still ambiguous or too high-level, emit a TODO list and hand off to PlanDetailer; otherwise go to the
+    responder.
+11. **PlanDetailer** — for each TODO step, call SubgoalPlanner (with an issue-specific instruction) to add a
+    refinement section. Capped by an **`Iteration`** of 3: it loops back to PlanDetailReviewer for another
+    review until the plan is sufficient or three passes have run.
+12. **ResponseBuilder** — confirm the goal and plan were created; the engine then appends the exact file
     location as a `file:///` URL. Opened from the web page, it shows a GitHub-style rendered view.
 
 So a single prompt produces **multiple `llama-server` calls — at least one per non-computed role, plus one

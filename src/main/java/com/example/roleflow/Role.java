@@ -30,17 +30,32 @@ import java.util.List;
  *                        RETURNS to it (rather than being reached by transition), or null for a normal role.
  * @param calls           per-category dispatch rules ({@code label -> function-role}) used by a role that
  *                        calls a function for each classified step (StepReviewer); empty for most roles.
+ * @param iterationLimit  the maximum number of times this role may run in a single request before the engine
+ *                        forces its {@code limit} transition (used to bound a refinement loop); 0 = no limit.
  * @param transitions     ordered decision-to-target rules
  */
 public record Role(int number, String name, String title, String action, String outputKind,
                    boolean outputMandatory, boolean readsArtifacts, String compute,
                    boolean researchesTopic, String provides, List<String> skills, String kind,
-                   List<Transition> calls, List<Transition> transitions) {
+                   List<Transition> calls, int iterationLimit, List<Transition> transitions) {
 
     /** True when this role's output is parsed into the session's list of topics. */
     public boolean providesTopics() {
         return "topics".equalsIgnoreCase(provides);
     }
+
+    /** True when this role's output is parsed into the session's list of to-do steps to detail. */
+    public boolean providesTodos() {
+        return "todos".equalsIgnoreCase(provides);
+    }
+
+    /** True when this role is capped at a maximum number of runs per request (see {@link #iterationLimit}). */
+    public boolean hasIterationLimit() {
+        return iterationLimit > 0;
+    }
+
+    /** The synthetic decision the engine uses when a role's iteration limit is reached. */
+    public static final String LIMIT = "limit";
 
     /** True when this role is computed deterministically by the engine rather than by the model. */
     public boolean isComputed() {

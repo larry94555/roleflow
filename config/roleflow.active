@@ -31,7 +31,14 @@
 #                (StepReviewer), in the form "category -> FunctionRole, ...". For every step, the engine
 #                calls the mapped function, which adds a detail section for that step to the plan file and
 #                returns. Each function call is recorded in the audit trail like a normal role.
-#   Transition:  how to choose the next role from the model's "decision"
+#   Iteration:   optional. An integer cap on how many times this role may run in a single request (e.g.
+#                "Iteration: 3"). Once the role has run that many times, the engine forces the role's
+#                "limit" transition instead of its normal one, so a refinement loop cannot run forever. The
+#                count is recorded in the audit trail.
+#   Provides:    (also) "Provides: todos" — the engine parses the reply (artifact, one step per line, each
+#                prefixed "ambiguous:" or "too high level:") into the session's TODO list for PlanDetailer.
+#   Transition:  how to choose the next role from the model's "decision" (or the synthetic "limit" decision
+#                when an Iteration cap is reached)
 #
 # A FUNCTION is the one role type that is not a transition point: it is called, it does its work (adding a
 # per-step detail section to the plan file), and control returns to the role that called it. Functions are
@@ -230,7 +237,7 @@ Action:
 Output: none
 Compute: classify-steps
 Calls: subgoal -> SubgoalPlanner, action -> ActionPlanner, request-for-information -> InformationPlanner, decision-point -> DecisionPlanner
-Transition: ResponseBuilder
+Transition: PlanDetailReviewer
 
 10. SubgoalPlanner
 Role: Function
@@ -292,7 +299,38 @@ Reads: plan
 Kind: function
 Transition: return
 
-14. ResponseBuilder
+14. PlanDetailReviewer
+Role: Plan detail reviewer
+Action:
+  Review the plan for COMPLETENESS — the goal, the four-phase plan, and the per-step "Step Details"
+  sections shown in the content above. Decide whether every step is worked out enough to be implemented
+  unambiguously with the available tools.
+  - If every step is fully worked out, set "decision" to "sufficient" and leave "artifact" empty.
+  - If any step still needs work, set "decision" to "update" and put a TODO list in "artifact": ONE step
+    per line, each prefixed with its issue — "ambiguous: <step>" if the step needs decision points or
+    assumptions, or "too high level: <step>" if the step needs a breakdown into substeps.
+  Put a one-sentence summary in "message".
+Output: none
+Reads: plan
+Provides: todos
+Transition: update -> PlanDetailer, sufficient -> ResponseBuilder, ResponseBuilder
+
+15. PlanDetailer
+Role: Plan detailer
+Action:
+  Add detail to every step on the TODO list from PlanDetailReviewer. This role is computed deterministically
+  by the engine (it does not call the model): for each TODO step the engine CALLS SubgoalPlanner, supplying
+  the extra instruction implied by the step's issue — an "ambiguous" step gets its decision points and
+  assumptions added; a "too high level" step gets a breakdown into substeps. Each call adds a refinement
+  section to the plan file and returns here.
+Output: none
+Compute: detail-todos
+Reads: plan
+Iteration: 3
+Calls: ambiguous -> SubgoalPlanner, too-high-level -> SubgoalPlanner
+Transition: limit -> ResponseBuilder, PlanDetailReviewer
+
+16. ResponseBuilder
 Role: Final responder
 Action:
   Tell the user, in one or two sentences, that their request has been turned into a goal and a plan

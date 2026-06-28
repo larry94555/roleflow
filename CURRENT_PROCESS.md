@@ -46,7 +46,7 @@ After a role returns, the engine resolves the model's `decision` against the rol
 A safety cap (`roleflow.max-steps`, default 20) stops runaway loops (including a reviewer that keeps
 recommending changes).
 
-## The fourteen roles
+## The sixteen roles
 
 ```
                          ┌──────────────────────┐
@@ -93,8 +93,19 @@ recommending changes).
                                             │               12 InformationPlanner,│ step to the plan file │
                                             │               13 DecisionPlanner) └───────────────────────┘
                                             ▼
-                                   ┌──────────────────┐
-                                   │14. ResponseBuilder│
+                                   ┌──────────────────────┐ update (TODO list)
+                                   │14. PlanDetailReviewer │──────────────┐
+                                   │  completeness check   │◀────────────┐│
+                                   └────────┬──────────────┘ i < 3       ││
+                                  sufficient │     ┌──────────────────────┘│ calls SubgoalPlanner
+                                            │     ▼                        │ per TODO step
+                                            │  ┌──────────────────┐ ───────┘ (adds a refinement section)
+                                            │  │15. PlanDetailer  │
+                                            │  │ Iteration: 3     │── i >= 3 ─┐
+                                            │  └──────────────────┘           │
+                                            ▼                                 ▼
+                                   ┌──────────────────┐◀──────────────────────┘
+                                   │16. ResponseBuilder│
                                    │     (done)        │
                                    └──────────────────┘
 ```
@@ -135,7 +146,7 @@ recommending changes).
    that step's classification (roles 10–13), which adds a detail section for the step to the plan file (see
    [Functions](#functions)). → role 14.
 10. **SubgoalPlanner (Function)** — called for a `subgoal` step; produces a short four-phase breakdown of
-    substeps for that step. **Returns** to StepReviewer.
+    substeps for that step. **Returns** to the caller.
 11. **ActionPlanner (Function)** — called for an `action` step; classifies it as "write code", "write and
     run code", "invoke a tool", or "invoke a service". **Returns** to StepReviewer.
 12. **InformationPlanner (Function)** — called for a `request-for-information` step; classifies how the
@@ -143,12 +154,21 @@ recommending changes).
     a tool", "web and code"). **Returns** to StepReviewer.
 13. **DecisionPlanner (Function)** — called for a `decision-point` step; states the decision made or how it
     will be made ("will ask user", "request information", "do tests"). **Returns** to StepReviewer.
-14. **ResponseBuilder (Final responder)** — gives a brief confirmation that the goal and plan were created.
+14. **PlanDetailReviewer (Plan detail reviewer)** — reviews the goal, plan, and step details for
+    **completeness**. If every step is worked out, `sufficient` → role 16. Otherwise `update` → role 15,
+    emitting a **TODO list** of the steps that are still `ambiguous` (need decision points/assumptions) or
+    `too-high-level` (need a breakdown).
+15. **PlanDetailer (Plan detailer)** — for each TODO step, **calls SubgoalPlanner** with the extra
+    instruction implied by the step's issue, adding a refinement section to the plan file. **Computed** (no
+    model call of its own). Capped by `Iteration: 3`: while under the cap it loops back to role 14 for
+    another review; once the cap is reached it goes to role 16 (see [Iteration](#iteration)).
+16. **ResponseBuilder (Final responder)** — gives a brief confirmation that the goal and plan were created.
     The engine then appends the exact file location as a `file:///` URL (see [Files written](#files-written)),
     and the topics considered are added to the reply. → `done`.
 
-Roles 10–13 are **functions**: unlike the other roles they are not transition points — StepReviewer *calls*
-them and they *return* (see [Functions](#functions)).
+Roles 10–13 are **functions**: unlike the other roles they are not transition points — they are *called*
+(by StepReviewer or PlanDetailer) and *return* (see [Functions](#functions)). Roles 14–15 form a bounded
+**detail-refinement loop** after the per-step details are added.
 
 ## Topic context
 
@@ -266,16 +286,35 @@ calls — for each step — the function mapped to that step's category (its `Ca
 Each function call is a real model turn through [`RoleFlowEngine`](src/main/java/com/example/roleflow/RoleFlowEngine.java)
 and is recorded in the audit trail **exactly like a role** — `ROLE_STARTED`, `MODEL_REQUEST`,
 `MODEL_RESPONSE`, `ROLE_RESULT`, an `ARTIFACT_WRITTEN` for the updated plan file, and a `TRANSITION` noting
-the `return` to StepReviewer. The function's output is appended to the plan file as one
-`## Step N: <step> — <category>` subsection under a new `# Step Details` heading; the **high-level plan is
-left unchanged** — functions only *add* per-step detail (see [Generated_Plans.md](Generated_Plans.md)).
+the `return` to the caller. The function's output is appended to the plan file as one subsection under a new
+`# Step Details` heading; the **high-level plan is left unchanged** — functions only *add* detail (see
+[Generated_Plans.md](Generated_Plans.md)).
+
+**PlanDetailer** also calls a function: for each step on PlanDetailReviewer's TODO list it calls
+`SubgoalPlanner`, passing an **extra instruction** ("add the decision points and assumptions it needs" for an
+ambiguous step, or "break it down into concrete substeps" for a too-high-level one). Those refinements are
+appended as `## Refinement: <step> — <issue>` subsections. This is the "additional prompt information a role
+can provide to a function when it makes a call."
+
+## Iteration
+
+A role may declare `Iteration: <n>` to cap how many times it runs in a single request. The engine counts each
+entry to the role; once the count reaches the cap it substitutes a synthetic **`limit`** decision for the
+role's normal one, so the role's `limit -> …` transition is taken instead of looping. The count is recorded
+in the audit trail (`iteration 2 of at most 3`, then `iteration 3 reached the limit of 3`).
+
+The detail-refinement loop uses this: **PlanDetailReviewer** (`update` → PlanDetailer, `sufficient` →
+ResponseBuilder) and **PlanDetailer** (`Iteration: 3`, `limit -> ResponseBuilder`, default → PlanDetailReviewer)
+keep refining the plan until it is sufficiently detailed or three passes have run — whichever comes first.
+(The overall `roleflow.max-steps` safety cap still applies as a backstop.)
 
 ## What the user experiences
 
 - **A signal** ("Hello", "Thanks for that"): analyse topics → classify → respond. One visible answer,
   **no files created**.
 - **A clear request**: analyse topics (and gather their context) → classify → clarify (clear) → goal →
-  plan → review → classify steps → detail each step (a function call per step) → respond, in one turn. One
+  plan → review → classify steps → detail each step (a function call per step) → review the plan for
+  completeness, refining it up to 3 times → respond, in one turn. One
   visible answer (from ResponseBuilder), and **a single combined `plan_*.md` file** in `goals/` (goal
   section, then plan, then a per-step detail section — see [Generated_Plans.md](Generated_Plans.md)). The
   topics considered are listed at the end of the reply.

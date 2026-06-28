@@ -120,8 +120,27 @@ Output: An updated plan file that adds a section associated with the step that w
 
 Transition:  Return back to the method that called this function.
 
+14.  PlanDetailReviewer
 
-14.  ResponseBuilder
+Role: Review the plan for completeness
+
+Action:  Go through all the details of the plan and make sure that all details have been worked out so that the plan can be implemented unambiguously with the given tools available. If any step is not fully worked out, then the plan is rated as "Update Needed".  If all steps are fully worked out, then the plan is "Sufficiently Detailed".  If an "Update Needed", call out each step that is not complete as the TODO_LIST. For each step that has an issue and is included in the TODO_LIST, call out whether the issue is "step is ambiguous" -- that is -- it requires decision points or assumptions or whether the issue is "step is too high level" -- that is -- it requires a breakdown of substeps to carry it out.
+
+Transition:  If "Update Needed", go to PlanDetailer. If "Sufficiently Detailed", go to ResponseBuilder.
+
+15.  PlanDetailer
+
+Role: Update plan with more detail 
+
+Iteration: Use a variable i that starts at 0 
+
+Action: Update all steps in the TODO_LIST to make them more complete. For now, here is the approach:  Iterate through each step in the TODO_LIST.  If the step is "step is ambiguous", call "subgoal" with the "add decision points and assumptions".  If the step is "step is too high level", then call "subgoal" with "need breakdown of points".
+
+Function Calls:  For each step in the TODO_LIST, call SubgoalPlanner
+
+Transition:  if i < 3, then go to PlanDetailReviewer.  If i >= 3, then go to ResponseBuilder.
+
+16.  ResponseBuilder
 
 Role:  Response to user
 

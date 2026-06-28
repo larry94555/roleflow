@@ -61,8 +61,10 @@ The document is Markdown, with the **goal first** and the **plan second**:
   [Plan structure enforcement](CURRENT_PROCESS.md#plan-structure-enforcement).
 - The **`# Step Details`** section holds one `## Step N: …` subsection per plan step, each added by the
   **function** that StepReviewer calls for that step's category (SubgoalPlanner / ActionPlanner /
-  InformationPlanner / DecisionPlanner). The high-level plan above is left unchanged — these sections only
-  *add* detail. See [Functions](CURRENT_PROCESS.md#functions).
+  InformationPlanner / DecisionPlanner). It may also contain `## Refinement: …` subsections added by
+  **PlanDetailer** for steps that PlanDetailReviewer flagged as still needing more detail. The high-level
+  plan above is left unchanged — these sections only *add* detail. See
+  [Functions](CURRENT_PROCESS.md#functions) and [Iteration](CURRENT_PROCESS.md#iteration).
 
 ## How the file is generated
 
@@ -79,6 +81,10 @@ The document is Markdown, with the **goal first** and the **plan second**:
    (SubgoalPlanner / ActionPlanner / InformationPlanner / DecisionPlanner). Each function's output is appended
    as a `## Step N: …` subsection under `# Step Details`, and the engine rewrites the same file. Each function
    call is recorded in the audit trail like a role. See [Functions](CURRENT_PROCESS.md#functions).
+5. **PlanDetailReviewer** then checks the whole document for completeness. If any step is still ambiguous or
+   too high-level, **PlanDetailer** calls SubgoalPlanner for each such step and appends a
+   `## Refinement: <step> — <issue>` subsection, then PlanDetailReviewer reviews again — up to 3 passes (its
+   `Iteration` cap). See [Iteration](CURRENT_PROCESS.md#iteration).
 
 Internally the goal and plan stay separate (each is what later roles read and what change-detection
 compares); only the on-disk artifact is combined.

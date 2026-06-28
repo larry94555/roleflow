@@ -59,6 +59,9 @@ class RoleFlowEngineTest {
                 // Default: the per-step planner functions return a short detail, so flow tests that reach
                 // StepReviewer do not have to script each function call (one per step).
                 if (role.endsWith("Planner")) return json("return", "detail for the step");
+                // Default: PlanDetailReviewer finds the plan sufficiently detailed, so flow tests go straight
+                // to ResponseBuilder without entering the PlanDetailer refinement loop.
+                if ("PlanDetailReviewer".equals(role)) return json("sufficient", "the plan is complete");
                 throw new IllegalStateException("no scripted reply for role " + role);
             }
             return queue.poll();
@@ -177,7 +180,7 @@ class RoleFlowEngineTest {
         // are model-driven, so the main-flow roles run in order and the functions run in between.
         List<String> mainFlow = model.rolesInvoked.stream().filter(r -> !r.endsWith("Planner")).toList();
         assertEquals(List.of("TopicAnalyzer", "SignalOrRequest", "HandleRequest", "GoalBuilder",
-                "PlanBuilder", "PlanReviewer", "ResponseBuilder"), mainFlow);
+                "PlanBuilder", "PlanReviewer", "PlanDetailReviewer", "ResponseBuilder"), mainFlow);
         assertTrue(model.rolesInvoked.stream().anyMatch(r -> r.endsWith("Planner")),
                 "a planner function is called for each step");
         // The user prompt is unchanged across the whole auto-advancing run.
@@ -355,13 +358,14 @@ class RoleFlowEngineTest {
                 "the system prompt used should be captured");
 
         assertTrue(hasType(events, AuditEvent.Type.RUN_STARTED));
-        // Counting only the MAIN-FLOW roles (ignoring the per-step planner functions): eight roles run
-        // (TopicAnalyzer found no topics, so TopicContextBuilder is skipped): topic, classifier, clarifier,
-        // goal, plan, plan-review, step-review, response.
-        assertEquals(8, mainFlowCount(events, AuditEvent.Type.ROLE_STARTED), "one ROLE_STARTED per role");
-        // StepReviewer is computed, so it has no MODEL_RESPONSE — only the seven model-driven roles do.
-        assertEquals(7, mainFlowCount(events, AuditEvent.Type.MODEL_RESPONSE));
-        assertEquals(8, mainFlowCount(events, AuditEvent.Type.ROLE_RESULT), "each role's result is recorded");
+        // Counting only the MAIN-FLOW roles (ignoring the per-step planner functions): nine roles run
+        // (TopicAnalyzer found no topics, so TopicContextBuilder is skipped; PlanDetailReviewer finds the
+        // plan sufficient, so PlanDetailer is skipped): topic, classifier, clarifier, goal, plan,
+        // plan-review, step-review, detail-review, response.
+        assertEquals(9, mainFlowCount(events, AuditEvent.Type.ROLE_STARTED), "one ROLE_STARTED per role");
+        // StepReviewer is computed, so it has no MODEL_RESPONSE — only the eight model-driven roles do.
+        assertEquals(8, mainFlowCount(events, AuditEvent.Type.MODEL_RESPONSE));
+        assertEquals(9, mainFlowCount(events, AuditEvent.Type.ROLE_RESULT), "each role's result is recorded");
         // The transition handling is called out, including the final "-> done".
         assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
                 && e.transition().contains("request") && e.transition().contains("HandleRequest")));
@@ -432,8 +436,75 @@ class RoleFlowEngineTest {
                 .findFirst().orElseThrow();
         assertTrue(functionRequest.systemPrompt().contains("The first step is"),
                 "the prompt should explicitly steer away from \"The first step is\" narration");
-        assertTrue(functionRequest.systemPrompt().contains("Describe the step DIRECTLY"),
+        assertTrue(functionRequest.systemPrompt().contains("Describe it DIRECTLY"),
                 functionRequest.systemPrompt());
+    }
+
+    @Test
+    void planDetailReviewerLoopsThroughPlanDetailerToAddRefinementSections() throws Exception {
+        String todos = "ambiguous: install Python\\ntoo high level: build the app";
+        ScriptedModel model = new ScriptedModel()
+                .on("SignalOrRequest", json("request", "a request"))
+                .on("HandleRequest", json("clear", "Criteria"))
+                .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
+                .on("PlanBuilder", jsonWithArtifact("continue", "plan built", VALID_PLAN))
+                .on("PlanReviewer", json("ok", "no change"))
+                // First review flags two steps; after PlanDetailer refines them, the second review passes.
+                .on("PlanDetailReviewer",
+                        jsonWithArtifact("update", "needs work", todos),
+                        json("sufficient", "now complete"))
+                .always("SubgoalPlanner", json("return", "SUBGOAL-DETAIL: do the substeps"))
+                .on("ResponseBuilder", json("done", "Done."));
+
+        engine.run("Build me a report", null, null, null, model, "PID-detail", "web");
+
+        String document = Files.readString(findFile("plan_"));
+        // PlanDetailer added one refinement section per TODO item, via SubgoalPlanner.
+        assertTrue(document.contains("## Refinement: install Python — ambiguous"), document);
+        assertTrue(document.contains("## Refinement: build the app — too-high-level"), document);
+        assertTrue(document.contains("SUBGOAL-DETAIL: do the substeps"), document);
+
+        List<AuditEvent> events = audit.viewByPrompt("PID-detail").events();
+        // PlanDetailReviewer ran twice (update, then sufficient); PlanDetailer ran once.
+        assertEquals(2, events.stream().filter(e -> e.type() == AuditEvent.Type.ROLE_STARTED
+                && "PlanDetailReviewer".equals(e.role())).count());
+        assertEquals(1, events.stream().filter(e -> e.type() == AuditEvent.Type.ROLE_STARTED
+                && "PlanDetailer".equals(e.role())).count());
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.VALIDATION
+                && "PlanDetailer".equals(e.role()) && e.detail().contains("iteration 1")));
+        // PlanDetailer passes the issue-specific extra instruction to SubgoalPlanner.
+        List<String> subgoalPrompts = events.stream()
+                .filter(e -> e.type() == AuditEvent.Type.MODEL_REQUEST && "SubgoalPlanner".equals(e.role()))
+                .map(AuditEvent::systemPrompt).toList();
+        assertTrue(subgoalPrompts.stream().anyMatch(p -> p.contains("AMBIGUOUS")), subgoalPrompts.toString());
+        assertTrue(subgoalPrompts.stream().anyMatch(p -> p.contains("TOO HIGH-LEVEL")),
+                subgoalPrompts.toString());
+    }
+
+    @Test
+    void planDetailerStopsAfterThreeIterations() throws Exception {
+        // PlanDetailReviewer always wants an update; the iteration cap must end the loop, not run forever.
+        ScriptedModel model = new ScriptedModel()
+                .on("SignalOrRequest", json("request", "a request"))
+                .on("HandleRequest", json("clear", "Criteria"))
+                .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
+                .on("PlanBuilder", jsonWithArtifact("continue", "plan built", VALID_PLAN))
+                .on("PlanReviewer", json("ok", "no change"))
+                .always("PlanDetailReviewer", jsonWithArtifact("update", "needs work", "ambiguous: refine this"))
+                .always("SubgoalPlanner", json("return", "more detail"))
+                .on("ResponseBuilder", json("done", "Done."));
+
+        String result = engine.run("Build me a report", null, null, null, model, "PID-cap", "web");
+
+        List<AuditEvent> events = audit.viewByPrompt("PID-cap").events();
+        // PlanDetailer runs at most three times, then the run exits to ResponseBuilder.
+        assertEquals(3, events.stream().filter(e -> e.type() == AuditEvent.Type.ROLE_STARTED
+                && "PlanDetailer".equals(e.role())).count());
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.VALIDATION
+                && "PlanDetailer".equals(e.role()) && e.detail().contains("reached the limit")));
+        assertTrue(model.rolesInvoked.contains("ResponseBuilder"), "the run still reaches the responder");
+        assertTrue(session.isIdle());
+        assertTrue(result.startsWith("Done."), result);
     }
 
     @Test
@@ -618,7 +689,7 @@ class RoleFlowEngineTest {
         // still reaches ResponseBuilder via the default transition.
         List<String> mainFlow = model.rolesInvoked.stream().filter(r -> !r.endsWith("Planner")).toList();
         assertEquals(List.of("TopicAnalyzer", "SignalOrRequest", "HandleRequest", "GoalBuilder",
-                "PlanBuilder", "PlanReviewer", "ResponseBuilder"), mainFlow);
+                "PlanBuilder", "PlanReviewer", "PlanDetailReviewer", "ResponseBuilder"), mainFlow);
         assertTrue(session.isIdle(), "the run should complete only after ResponseBuilder");
         AuditView view = audit.viewByPrompt("PID-fallback");
         assertTrue(view.events().stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
