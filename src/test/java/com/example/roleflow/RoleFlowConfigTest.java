@@ -113,16 +113,16 @@ class RoleFlowConfigTest {
     }
 
     @Test
-    void shippedActiveConfigParsesIntoFourteenRoles() throws Exception {
+    void shippedActiveConfigParsesIntoSixteenRoles() throws Exception {
         Path path = Path.of("config/roleflow.active");
         RoleFlowConfig config = new RoleFlowConfig(RoleFlowConfig.parse(Files.readString(path)));
         List<Role> roles = config.roles();
 
-        assertEquals(14, roles.size(), "the shipped workflow should define fourteen roles");
+        assertEquals(16, roles.size(), "the shipped workflow should define sixteen roles");
         assertEquals(List.of("TopicAnalyzer", "TopicContextBuilder", "SignalOrRequest", "SignalResponse",
                         "HandleRequest", "GoalBuilder", "PlanBuilder", "PlanReviewer", "StepReviewer",
                         "SubgoalPlanner", "ActionPlanner", "InformationPlanner", "DecisionPlanner",
-                        "ResponseBuilder"),
+                        "PlanDetailReviewer", "PlanDetailer", "ResponseBuilder"),
                 roles.stream().map(Role::name).toList());
         assertEquals("TopicAnalyzer", config.firstRole().name(), "the run starts by analysing topics");
 
@@ -133,11 +133,29 @@ class RoleFlowConfigTest {
         assertEquals("ActionPlanner", stepReviewer.functionFor("action"));
         assertEquals("InformationPlanner", stepReviewer.functionFor("request-for-information"));
         assertEquals("DecisionPlanner", stepReviewer.functionFor("decision-point"));
-        assertEquals("ResponseBuilder", stepReviewer.resolve("continue"), "still transitions to the responder");
+        // After classifying/detailing steps, StepReviewer hands off to the completeness review.
+        assertEquals("PlanDetailReviewer", stepReviewer.resolve("continue"));
         for (String fn : List.of("SubgoalPlanner", "ActionPlanner", "InformationPlanner", "DecisionPlanner")) {
             assertTrue(config.byName(fn).isFunction(), fn + " should be a function");
             assertEquals("return", config.byName(fn).resolve("anything"), fn + " returns to its caller");
         }
+
+        // PlanDetailReviewer provides the TODO list and loops to PlanDetailer when an update is needed.
+        Role detailReviewer = config.byName("PlanDetailReviewer");
+        assertTrue(detailReviewer.providesTodos());
+        assertEquals("PlanDetailer", detailReviewer.resolve("update"));
+        assertEquals("ResponseBuilder", detailReviewer.resolve("sufficient"));
+
+        // PlanDetailer is computed, capped at 3 iterations, and calls SubgoalPlanner for each TODO issue.
+        Role detailer = config.byName("PlanDetailer");
+        assertTrue(detailer.isComputed());
+        assertEquals("detail-todos", detailer.compute());
+        assertEquals(3, detailer.iterationLimit());
+        assertTrue(detailer.hasIterationLimit());
+        assertEquals("SubgoalPlanner", detailer.functionFor("ambiguous"));
+        assertEquals("SubgoalPlanner", detailer.functionFor("too-high-level"));
+        assertEquals("PlanDetailReviewer", detailer.resolve("continue"), "loops back while under the limit");
+        assertEquals("ResponseBuilder", detailer.resolve("limit"), "exits to the responder at the limit");
 
         // TopicAnalyzer provides topics; TopicContextBuilder gathers their context deterministically.
         Role topicAnalyzer = config.byName("TopicAnalyzer");
@@ -181,7 +199,7 @@ class RoleFlowConfigTest {
         // Any unexpected decision (e.g. a model that says "continue") defaults forward, not to "done".
         assertEquals("StepReviewer", planReviewer.resolve("continue"));
         assertEquals("StepReviewer", planReviewer.resolve("anything-unexpected"));
-        assertEquals("ResponseBuilder", config.byName("StepReviewer").resolve("continue"));
+        assertEquals("PlanDetailReviewer", config.byName("StepReviewer").resolve("continue"));
     }
 
     @Test

@@ -26,7 +26,8 @@ public class RoleFlowConfig {
 
     private static final Pattern ROLE_HEADER = Pattern.compile("^\\s*(\\d+)\\.\\s+([A-Za-z][\\w-]*)\\s*$");
     private static final Pattern FIELD_HEADER = Pattern.compile(
-            "^\\s*(Role|Action|Output|Reads|Compute|Research|Provides|Skills|Kind|Calls|Transition)\\s*:(.*)$");
+            "^\\s*(Role|Action|Output|Reads|Compute|Research|Provides|Skills|Kind|Calls|Iteration|Transition)"
+                    + "\\s*:(.*)$");
 
     private final List<Role> roles;
     private final Map<String, Role> byName;
@@ -143,9 +144,19 @@ public class RoleFlowConfig {
         // Calls field: per-category dispatch ("subgoal -> SubgoalPlanner, action -> ActionPlanner, ...").
         List<Role.Transition> calls = parseTransitions(value(fields, "calls"));
 
+        // Iteration field: the first integer found is the role's max runs per request (0 = no limit).
+        int iterationLimit = parseIterationLimit(value(fields, "iteration"));
+
         List<Role.Transition> transitions = parseTransitions(value(fields, "transition"));
         result.add(new Role(number, name, title, action, outputKind, outputMandatory, readsArtifacts,
-                compute, researchesTopic, provides, skills, kind, calls, transitions));
+                compute, researchesTopic, provides, skills, kind, calls, iterationLimit, transitions));
+    }
+
+    /** Extracts the iteration cap from an Iteration field (e.g. "Use a variable i ... only 3 times" -> 3). */
+    private static int parseIterationLimit(String text) {
+        if (text == null || text.isBlank()) return 0;
+        Matcher digits = Pattern.compile("\\d+").matcher(text);
+        return digits.find() ? Integer.parseInt(digits.group()) : 0;
     }
 
     /** Parses a comma/semicolon/whitespace-separated list of skill names, dropping blanks and "none". */

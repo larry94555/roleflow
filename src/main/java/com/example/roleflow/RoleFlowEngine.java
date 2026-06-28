@@ -122,6 +122,18 @@ public class RoleFlowEngine {
                         : "identified topics: " + String.join(", ", topics));
             }
 
+            // A role that provides a TODO list (PlanDetailReviewer) feeds the steps it flagged as needing more
+            // detail into the session, for PlanDetailer to refine. A "sufficient" decision means none.
+            if (role.providesTodos()) {
+                List<TodoItem> todos = "sufficient".equalsIgnoreCase(reply.decision())
+                        ? List.of()
+                        : TodoList.parse(reply.artifact().isBlank() ? reply.message() : reply.artifact());
+                session.setTodos(todos);
+                audit.validation(runId, role.name(), todos.isEmpty()
+                        ? "plan is sufficiently detailed"
+                        : "plan needs more detail for " + todos.size() + " step(s)");
+            }
+
             if (role.hasOutput()) {
                 // Only act when there is content AND it actually differs from what we already have, so a
                 // reviewer that merely echoes the existing plan does not produce a spurious rewrite.
@@ -145,19 +157,40 @@ public class RoleFlowEngine {
                 }
             }
 
-            // A role with function calls (StepReviewer) dispatches a function per classified step; each
-            // function adds a detail section to the plan file and returns here before the role transitions.
+            // A role with function calls dispatches a function for each item and returns here before the role
+            // transitions. StepReviewer calls one per classified plan step; PlanDetailer (Compute:
+            // detail-todos) calls SubgoalPlanner for each step PlanDetailReviewer flagged as needing detail.
             if (role.hasCalls()) {
-                runStepFunctions(role, runId, maxTokens, temperature, model);
+                if ("detail-todos".equalsIgnoreCase(role.compute())) {
+                    runTodoDetailing(role, runId, maxTokens, temperature, model);
+                } else {
+                    runStepFunctions(role, runId, maxTokens, temperature, model);
+                }
             }
 
-            String target = role.resolve(reply.decision());
+            // The decision that drives the transition is normally the model's reply. A role with an iteration
+            // limit (PlanDetailer) instead transitions on a synthetic "limit" decision once it has run the
+            // capped number of times, so a refinement loop cannot run forever.
+            String decision = reply.decision();
+            if (role.hasIterationLimit()) {
+                int count = session.incrementIteration(role.name());
+                if (count >= role.iterationLimit()) {
+                    decision = Role.LIMIT;
+                    audit.validation(runId, role.name(),
+                            "iteration " + count + " reached the limit of " + role.iterationLimit());
+                } else {
+                    audit.validation(runId, role.name(),
+                            "iteration " + count + " of at most " + role.iterationLimit());
+                }
+            }
+
+            String target = role.resolve(decision);
             if (target == null || Role.DONE.equalsIgnoreCase(target)) {
                 // target == null means the decision matched no transition and the role has no default;
                 // call that out explicitly so a misbehaving model is easy to spot in the audit trail.
                 String detail = target == null
-                        ? "decision '" + reply.decision() + "' matched no transition; run complete"
-                        : "decision '" + reply.decision() + "' -> done (run complete)";
+                        ? "decision '" + decision + "' matched no transition; run complete"
+                        : "decision '" + decision + "' -> done (run complete)";
                 audit.transition(runId, role.name(), detail);
                 audit.runCompleted(runId, role.name());
                 return complete(lastMessage);
@@ -165,20 +198,20 @@ public class RoleFlowEngine {
             if (Role.AWAIT.equalsIgnoreCase(target)) {
                 // The role asked the user something; pause and resume at this same role on the next prompt.
                 audit.transition(runId, role.name(),
-                        "decision '" + reply.decision() + "' -> await (waiting for the user)");
+                        "decision '" + decision + "' -> await (waiting for the user)");
                 audit.clarificationPause(runId, role.name(), lastMessage);
                 return lastMessage;
             }
             if (config.byName(target) == null) {
                 audit.transition(runId, role.name(),
-                        "decision '" + reply.decision() + "' -> " + target + " (no such role: run complete)");
+                        "decision '" + decision + "' -> " + target + " (no such role: run complete)");
                 audit.runCompleted(runId, role.name());
                 return complete(lastMessage);
             }
             // A transition to a different role advances; a transition to the same role re-runs it
             // automatically (e.g. a reviewer re-reviewing its own updated output).
             audit.transition(runId, role.name(),
-                    "decision '" + reply.decision() + "' -> " + config.byName(target).name());
+                    "decision '" + decision + "' -> " + config.byName(target).name());
             session.moveTo(config.byName(target).name());
         }
 
@@ -268,6 +301,12 @@ public class RoleFlowEngine {
             audit.validation(runId, role.name(), "classified " + steps.size() + " step(s) deterministically");
         } else if ("build-topic-context".equalsIgnoreCase(role.compute())) {
             text = buildTopicContext(role, runId);
+        } else if ("detail-todos".equalsIgnoreCase(role.compute())) {
+            // The actual SubgoalPlanner calls happen in runTodoDetailing (it needs the model); here we just
+            // summarise how many steps will be refined this pass.
+            int todos = session.todos().size();
+            text = todos == 0 ? "No steps need additional detail." : "Refining " + todos + " step(s).";
+            audit.validation(runId, role.name(), "detailing " + todos + " step(s) flagged by PlanDetailReviewer");
         } else {
             text = "No engine built-in named '" + role.compute() + "'.";
         }
@@ -316,24 +355,59 @@ public class RoleFlowEngine {
             if (function == null) {
                 continue; // no function mapped for this category; leave the step without an added section
             }
-            int stepNumber = i + 1;
-            audit.roleStarted(runId, function.name());
-            String systemPrompt = buildSystemPrompt(function, null) + stepContextSection(stepNumber, step);
-            RoleOutcome outcome = invokeRole(function, systemPrompt, session.topicPrompt(),
-                    maxTokens, temperature, model, runId);
-            String detail = outcome.reply().message().isBlank()
-                    ? outcome.raw().trim() : outcome.reply().message();
-            audit.roleResult(runId, function.name(), detail, outcome.reply().decision());
-
-            String body = outcome.artifact().isBlank() ? detail : outcome.artifact();
-            String section = "## Step " + stepNumber + ": " + step.text()
-                    + " — " + step.classification() + "\n\n" + body.strip();
-            session.addStepSection(section);
-            rewritePlanWithStepSections(runId, function.name());
-            // A function returns to its caller rather than transitioning; record the return like a transition.
-            audit.transition(runId, function.name(),
-                    "return -> " + caller.name() + " (function returned)");
+            String heading = "## Step " + (i + 1) + ": " + step.text() + " — " + step.classification();
+            invokeFunction(caller, function, runId, heading, step.text(), step.classification(), null,
+                    maxTokens, temperature, model);
         }
+    }
+
+    /**
+     * For PlanDetailer ({@code Compute: detail-todos}), refines every step PlanDetailReviewer flagged as
+     * needing more detail. For each TODO item it calls the mapped function (SubgoalPlanner) with an extra
+     * instruction derived from the item's issue — the "additional prompt information" PlanDetailer provides —
+     * so an ambiguous step gets decision points/assumptions and a too-high-level step gets a breakdown.
+     */
+    private void runTodoDetailing(Role caller, String runId, Integer maxTokens, Double temperature,
+                                  ModelInvoker model) throws Exception {
+        for (TodoItem todo : session.todos()) {
+            String functionName = caller.functionFor(todo.issue());
+            Role function = functionName == null ? null : config.byName(functionName);
+            if (function == null) {
+                continue;
+            }
+            String extra = TodoItem.TOO_HIGH_LEVEL.equals(todo.issue())
+                    ? "This step is TOO HIGH-LEVEL: break it down into concrete substeps."
+                    : "This step is AMBIGUOUS: add the decision points and assumptions it needs.";
+            String heading = "## Refinement: " + todo.step() + " — " + todo.issue();
+            invokeFunction(caller, function, runId, heading, todo.step(), todo.issue(), extra,
+                    maxTokens, temperature, model);
+        }
+    }
+
+    /**
+     * Invokes one function for a single item, records it in the audit trail exactly like a role
+     * (ROLE_STARTED, MODEL_REQUEST/RESPONSE, ROLE_RESULT, ARTIFACT_WRITTEN), appends its output as a section
+     * to the plan file under {@code heading}, then records the RETURN to {@code caller}. {@code extraPrompt}
+     * is optional additional instruction the calling role supplies for this item.
+     */
+    private void invokeFunction(Role caller, Role function, String runId, String heading, String itemText,
+                                String itemCategory, String extraPrompt, Integer maxTokens, Double temperature,
+                                ModelInvoker model) throws Exception {
+        audit.roleStarted(runId, function.name());
+        String systemPrompt = buildSystemPrompt(function, null) + stepContextSection(itemText, itemCategory);
+        if (extraPrompt != null && !extraPrompt.isBlank()) {
+            systemPrompt += "\nAdditional instruction for this step: " + extraPrompt;
+        }
+        RoleOutcome outcome = invokeRole(function, systemPrompt, session.topicPrompt(),
+                maxTokens, temperature, model, runId);
+        String detail = outcome.reply().message().isBlank() ? outcome.raw().trim() : outcome.reply().message();
+        audit.roleResult(runId, function.name(), detail, outcome.reply().decision());
+
+        String body = outcome.artifact().isBlank() ? detail : outcome.artifact();
+        session.addStepSection(heading + "\n\n" + body.strip());
+        rewritePlanWithStepSections(runId, function.name());
+        // A function returns to its caller rather than transitioning; record the return like a transition.
+        audit.transition(runId, function.name(), "return -> " + caller.name() + " (function returned)");
     }
 
     /** Recomposes the plan file to include the step-detail sections gathered so far and records the write. */
@@ -346,13 +420,13 @@ public class RoleFlowEngine {
         audit.artifactWritten(runId, byRole, "plan", path);
     }
 
-    /** The system-prompt section that tells a function which single step it is detailing. */
-    private static String stepContextSection(int number, StepClassifier.Classified step) {
-        return "\n\nYou are detailing ONE specific step of the plan, shown below. Provide the detail for THIS "
-                + "step only (not the whole plan), as described in your task, and put it in \"message\".\n"
-                + "Describe the step DIRECTLY. Do NOT refer to it by position and do NOT begin with phrases "
+    /** The system-prompt section that tells a function which single item it is detailing. */
+    private static String stepContextSection(String itemText, String category) {
+        return "\n\nYou are detailing ONE specific item of the plan, shown below. Provide the detail for THIS "
+                + "item only (not the whole plan), as described in your task, and put it in \"message\".\n"
+                + "Describe it DIRECTLY. Do NOT refer to it by position and do NOT begin with phrases "
                 + "like \"The first step is\" or \"This step\" — write the detail itself.\n"
-                + "Step (classified as " + step.classification() + "): " + step.text();
+                + "Item (classified as " + category + "): " + itemText;
     }
 
     /**
@@ -502,6 +576,15 @@ public class RoleFlowEngine {
             for (Map.Entry<String, String> entry : contents.entrySet()) {
                 prompt.append("--- ").append(entry.getKey()).append(" ---\n")
                         .append(entry.getValue()).append("\n");
+            }
+            // Include the per-step detail sections gathered so far, so a reviewer (PlanDetailReviewer) can
+            // judge completeness and a function can avoid repeating detail that already exists.
+            List<String> stepSections = session.stepSections();
+            if (!stepSections.isEmpty()) {
+                prompt.append("--- step details ---\n");
+                for (String section : stepSections) {
+                    prompt.append(section).append("\n\n");
+                }
             }
         }
 
