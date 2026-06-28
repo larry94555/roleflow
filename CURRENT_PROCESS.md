@@ -163,11 +163,23 @@ system prompt only when **both** the role declares it **and** the skill's name m
 identified topics — so a role gets domain knowledge exactly when the subject calls for it. The use of a
 skill is recorded as a `VALIDATION` event (`applied skill(s): …`) on the role.
 
-The first skill is **`mathematics`**, applied by **PlanBuilder** (`Skills: mathematics`). It corrects a
-recurring mistake the model makes on math prompts: treating "searched the range and found no counterexample"
-as a failure to retry or extend. The skill explains that a search over a fixed range is a **complete** result
-whether or not a counterexample is found, and that the goal is to gain information about a conjecture, not to
-prove it. See [Skill_Registry.md](Skill_Registry.md) for how to create and wire a new skill.
+The first skill is **`mathematics`**, applied by **PlanBuilder** (`Skills: mathematics`). It corrects two
+recurring mistakes the model makes on math prompts: treating "searched the range and found no counterexample"
+as a failure to retry or extend, AND treating a counterexample that *is* found as something to "handle" or
+fix. The skill explains that a search over a fixed range is a **complete** result whichever outcome occurs —
+both a counterexample and "none found" need only to be **reported**, there is nothing to handle, fix, retry,
+or resolve — and that the goal is to gain information about a conjecture, not to prove it. See
+[Skill_Registry.md](Skill_Registry.md) for how to create and wire a new skill.
+
+### Changeable vs information-only state
+
+Independent of any skill, **PlanBuilder** and **PlanReviewer** apply a general check to Phase 3
+(Verification) and Phase 4 (Next steps): distinguish a **changeable** state (something the plan can act on or
+modify — a file to create, a backup to schedule) from an **information-only** state (a fact that can only be
+observed and reported — e.g. whether a counterexample exists). Verification and Next steps may confirm,
+report, or act on changeable state, but must **never** try to change an information-only result. PlanReviewer
+flags any step that tries to "handle", fix, retry, or re-run an information-only result as out of place. This
+is what stops a plan from adding a step like *"if a counterexample is found, the application must handle it"*.
 
 ## Plan structure enforcement
 
@@ -220,11 +232,12 @@ classified.
 - **A signal** ("Hello", "Thanks for that"): analyse topics → classify → respond. One visible answer,
   **no files created**.
 - **A clear request**: analyse topics (and gather their context) → classify → clarify (clear) → goal →
-  plan → review → respond, in one turn. One visible answer (from ResponseBuilder), and **a goal file and a
-  plan file** in `goals/`. The topics considered are listed at the end of the reply.
+  plan → review → respond, in one turn. One visible answer (from ResponseBuilder), and **a single combined
+  `plan_*.md` file** in `goals/` (goal section first, then plan — see
+  [Generated_Plans.md](Generated_Plans.md)). The topics considered are listed at the end of the reply.
 - **A request needing clarification**: …→ clarify asks a question and **stops**. The user answers
-  in their next prompt, which resumes at the Clarifier and continues to completion. The goal and plan
-  files share a run id so they are recognizable as belonging to the same request.
+  in their next prompt, which resumes at the Clarifier and continues to completion. The combined file keeps
+  the request's run id, so it is recognizable as belonging to the request.
 - **A cancelled request**: …→ clarify acknowledges the cancellation → done. **No files.**
 
 > **Note on calls.** Only the model-driven roles make a `llama-server` call; the two computed roles
@@ -233,34 +246,39 @@ classified.
 
 ## Files written
 
-For a request, files are written to the `goals/` directory (configurable via `roleflow.goals-dir`):
+For a request, a **single** file is written to the `goals/` directory (configurable via
+`roleflow.goals-dir`):
 
-- `goal_<prefix>_<timestamp>.md` — the goal document from GoalBuilder.
-- `plan_<prefix>_<timestamp>.md` — the plan document from PlanBuilder.
+- `plan_<prefix>_<timestamp>.md` — the combined document: a `# Goal` section (from GoalBuilder) followed by
+  a `# Plan` section (from PlanBuilder, reviewed). The goal is no longer a separate file, so the directory
+  holds one file per request instead of two. See [Generated_Plans.md](Generated_Plans.md) for the full
+  format and rendering details.
 
 The `<prefix>` is a short, human-readable label summarizing the session's first prompt (e.g.
 `search-integers-counterexample`), kept unique across sessions by appending a number when needed
-(`legendre`, `legendre-2`, …). It is the leading part of the run id, so a whole session's files and log
+(`legendre`, `legendre-2`, …). It is the leading part of the run id, so a whole session's file and log
 lines can be found with a single `grep <prefix>_`. The `<timestamp>` (`yyyyMMdd-HHmmss`) is created when a
-request's run begins and is reused across clarification pauses, so a request's goal and plan files share
-the same id. These files are human-readable and are also fed back into later roles as context.
+request's run begins and is reused across clarification pauses.
 
-A role is shown the prior artifacts' **content** when it produces output (e.g. PlanBuilder builds on the
-goal) or when it declares `Reads:` in the config (e.g. StepReviewer must read the plan to classify its
-steps). A **pure reporting** role (ResponseBuilder) is given only the file **locations** and told not to
-paste the contents. When the run completes, the engine appends the authoritative file links to the reply
-as `file:///` URLs, for example:
+Internally the goal and plan are kept as **separate** pieces in the session — the goal is captured but not
+written to its own file, and the plan role composes the two into the on-disk document
+([`PlanDocument`](src/main/java/com/example/roleflow/PlanDocument.java)). A role is shown the prior
+artifacts' **content** when it produces output (e.g. PlanBuilder builds on the goal) or when it declares
+`Reads:` in the config. A **pure reporting** role (ResponseBuilder) is given only the file **location** and
+told not to paste the contents. When the run completes, the engine appends the authoritative link to the
+reply as a `file:///` URL, for example:
 
 ```
 The goal and plan were created successfully.
 
 Files created:
-- Goal file: file:///C:/Users/larry/github/roleflow/goals/goal_legendre_20260625-164426.md
 - Plan file: file:///C:/Users/larry/github/roleflow/goals/plan_legendre_20260625-164426.md
 ```
 
-This way the exact paths come from the engine rather than being transcribed (and possibly garbled) by the
-model, and they can be opened directly from a browser.
+This way the exact path comes from the engine rather than being transcribed (and possibly garbled) by the
+model. From the **web page** the link opens a GitHub-style rendered view of the document (the
+[`GoalFileController`](src/main/java/com/example/roleflow/GoalFileController.java) renders the Markdown to
+HTML; append `?raw=1` for the unrendered source).
 
 ## Relationship to memory
 
@@ -274,5 +292,5 @@ keeps running on top of that compacted memory.
 | Property | Default | Description |
 |----------|---------|-------------|
 | `roleflow.config` | `config/roleflow.active` | Path to the workflow file. Empty/missing → plain single-call mode. |
-| `roleflow.goals-dir` | `goals` | Where goal and plan files are written. |
+| `roleflow.goals-dir` | `goals` | Where the combined goal-and-plan files are written. |
 | `roleflow.max-steps` | `20` | Safety cap on role steps per prompt. |

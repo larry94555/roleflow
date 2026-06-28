@@ -13,8 +13,8 @@ that memory grows too large to fit the model's context window, it is **compacted
 Claude Code auto-compacts a long session) — see [Conversation memory](#conversation-memory-and-compaction).
 
 Every prompt is processed by a **role workflow** defined in [`config/roleflow.active`](config/roleflow.active):
-the prompt is classified, requests are clarified, and a **goal file** and **plan file** are produced for
-real requests. This means a single prompt usually results in **several** calls to `llama-server` — one per
+the prompt is classified, requests are clarified, and a single **goal-and-plan file** is produced for
+real requests (see [Generated_Plans.md](Generated_Plans.md)). This means a single prompt usually results in **several** calls to `llama-server` — one per
 role. See [Role workflow](#role-workflow) below and [CURRENT_PROCESS.md](CURRENT_PROCESS.md) for the full
 flow.
 
@@ -218,10 +218,11 @@ The shipped workflow has ten roles:
 4. **SignalResponse** — for a signal: acknowledge or reply. *(ends here — no files)*
 5. **HandleRequest** — for a request: make the success criteria clear, asking clarifying questions if
    needed (and pausing for your answer), or noting a cancellation.
-6. **GoalBuilder** — write the **goal** (the criteria for success) to a file in `goals/`.
-7. **PlanBuilder** — write a four-phase **plan** (Preparation, Action, Verification, Next steps) to a
-   file in `goals/`. Phase 1 must call out the **assumptions and decision points** the request implies
-   (e.g. the programming language for an app) — making them or adding steps to figure them out.
+6. **GoalBuilder** — author the **goal** (the criteria for success). It becomes the first section of the
+   combined plan file (no separate goal file).
+7. **PlanBuilder** — author a four-phase **plan** (Preparation, Action, Verification, Next steps); the
+   engine writes the **goal and plan together** as one file in `goals/`. Phase 1 must call out the
+   **assumptions and decision points** the request implies (e.g. the programming language for an app).
 8. **PlanReviewer** — review the plan, using the **topic context** gathered by TopicContextBuilder
    to flag steps that contradict how the topic actually works; if a change is warranted it rewrites the
    plan file and re-reviews, otherwise it confirms no change. Its verdict is recorded in the **audit
@@ -230,11 +231,11 @@ The shipped workflow has ten roles:
    *subgoal*, and record the classifications in the **audit trail**. This step is computed deterministically
    in code (no model call).
 10. **ResponseBuilder** — confirm the goal and plan were created; the engine then appends the exact file
-    locations as `file:///` URLs you can open from a browser.
+    location as a `file:///` URL. Opened from the web page, it shows a GitHub-style rendered view.
 
 So a single prompt produces **multiple `llama-server` calls — at least one per non-computed role.** A
 signal is analysed for topics and then takes two more calls and writes nothing; a request runs through all
-the roles and writes a **goal file** and a **plan file**. If a request is ambiguous, the Clarifier asks a question and waits; your next prompt answers it
+the roles and writes a **single combined goal-and-plan file** (see [Generated_Plans.md](Generated_Plans.md)). If a request is ambiguous, the Clarifier asks a question and waits; your next prompt answers it
 and the flow resumes. Because every role call goes through the shared conversation memory, clarifying
 questions and answers accumulate as context without disrupting the flow.
 
@@ -249,14 +250,13 @@ To make sure I get this right: should the backup run every week indefinitely,
 and where should the copies be stored?           <-- request needed clarification (paused)
 RoleFlow> Yes, weekly forever, store them on my external drive
 Your request has been turned into a goal and a plan.
-Goal file:  goals/goal_backup-notes_20260625-101500.md
-Plan file:  goals/plan_backup-notes_20260625-101500.md   <-- request: goal + plan written
+Plan file:  goals/plan_backup-notes_20260625-101500.md   <-- one file: goal section + plan section
 ```
 
-The file names start with a short, human-readable **prefix** summarizing the session's first prompt
-(`backup-notes`), so goals and plans made on the same day are easy to tell apart. The prefix is kept
-unique across sessions (a number is appended if it would repeat), is shared by a request's goal and plan,
-and also appears in every audit log line — so `grep backup-notes_ audit.log` returns just that session.
+The file name starts with a short, human-readable **prefix** summarizing the session's first prompt
+(`backup-notes`), so files made on the same day are easy to tell apart. The prefix is kept
+unique across sessions (a number is appended if it would repeat) and also appears in every audit log line —
+so `grep backup-notes_ audit.log` returns just that session.
 
 For the complete flow — the JSON protocol each role uses, the exact transition rules, and a diagram — see
 **[CURRENT_PROCESS.md](CURRENT_PROCESS.md)**.
@@ -359,7 +359,7 @@ and can be overridden on the command line, e.g. `--server.port=9000`. The most u
 | `roleflow.system-prompt`  | *(empty)*              | Default system prompt (plain mode only, when no workflow loaded). |
 | `roleflow.terminal.enabled` | `true`               | Read prompts from stdin. Set `false` to disable.         |
 | `roleflow.config`         | `config/roleflow.active` | Workflow file. Empty/missing → plain single-call mode.  |
-| `roleflow.goals-dir`      | `goals`                | Directory where goal and plan files are written.         |
+| `roleflow.goals-dir`      | `goals`                | Directory where the combined goal-and-plan files are written. |
 | `roleflow.max-steps`      | `20`                   | Safety cap on role steps processed per prompt.           |
 | `roleflow.audit.log-file` | `audit.log`            | Audit log file to follow with `tail -f`.                 |
 | `roleflow.audit.max-trails` | `50`                 | Recent runs kept in memory for the audit web view.       |
@@ -409,7 +409,10 @@ src/main/java/com/example/roleflow/
   RoleFlowReply.java           Parses the model's {message,decision,artifact} JSON
   RoleFlowSession.java         Per-session flow state (current role, run id, artifacts)
   RoleFlowEngine.java          Drives a prompt through the roles (emits audit events)
-  GoalFileWriter.java          Writes goal/plan files into goals/
+  GoalFileWriter.java          Writes the combined goal-and-plan file into goals/
+  PlanDocument.java            Composes the goal + plan into one Markdown document
+  MarkdownRenderer.java        Renders a plan file to GitHub-style HTML for the web view
+  GoalFileController.java      Serves /goals/<name> (rendered HTML, or ?raw=1 for source)
   AuditEvent.java              One audit event (role, prompts, response, transition…)
   AuditService.java            Collects audit trails; writes the audit log
   AuditView.java               A trail snapshot returned to the audit web page
@@ -422,7 +425,7 @@ src/main/resources/
 config/
   roleflow.active              The role workflow the engine runs
   roleflow.proposed            The human-authored source for the workflow
-goals/                         Goal and plan files written for requests
+goals/                         Combined goal-and-plan files written for requests
 src/test/java/com/example/roleflow/
   ...Test.java                 Unit and context tests
 CURRENT_PROCESS.md             Detailed explanation of the role workflow

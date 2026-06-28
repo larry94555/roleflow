@@ -123,14 +123,25 @@ public class RoleFlowEngine {
             }
 
             if (role.hasOutput()) {
-                // Only write when there is content AND it actually differs from what is already on file,
-                // so a reviewer that merely echoes the existing plan does not produce a spurious rewrite.
+                // Only act when there is content AND it actually differs from what we already have, so a
+                // reviewer that merely echoes the existing plan does not produce a spurious rewrite.
+                String kind = role.outputKind();
                 String artifact = outcome.artifact();
-                String existing = session.artifactContents().get(role.outputKind());
+                String existing = session.artifactContents().get(kind);
                 if (!artifact.isBlank() && !artifact.equals(existing)) {
-                    String path = writer.write(role.outputKind(), runId, artifact);
-                    session.addArtifact(role.outputKind(), artifact, path);
-                    audit.artifactWritten(runId, role.name(), role.outputKind(), path);
+                    if ("goal".equalsIgnoreCase(kind)) {
+                        // The goal is NOT written to its own file; it is kept in the session and becomes the
+                        // first section of the single combined plan document written by the plan role.
+                        session.setArtifactContent(kind, artifact);
+                    } else {
+                        // The plan is written as ONE document: the goal section first, then the plan. The
+                        // pure plan text is what later roles read (and what change-detection compares); the
+                        // composed goal+plan document is what lands on disk.
+                        session.addArtifact(kind, artifact,
+                                writer.write(kind, runId,
+                                        PlanDocument.compose(session.artifactContents().get("goal"), artifact)));
+                        audit.artifactWritten(runId, role.name(), kind, session.artifactPaths().get(kind));
+                    }
                 }
             }
 
@@ -419,23 +430,26 @@ public class RoleFlowEngine {
                     .append(" artifact: put its full human-readable content in \"artifact\".\n");
         }
 
+        // A role that builds on or reviews prior artifacts (the plan uses the goal; the reviewers analyse
+        // the plan) is shown their full content. This is independent of whether a file exists yet: the goal
+        // has content but no file of its own, and PlanBuilder still needs to see it.
+        Map<String, String> contents = session.artifactContents();
+        if (role.needsArtifactContent() && !contents.isEmpty()) {
+            prompt.append("\nContent produced so far in this request, for your reference ")
+                    .append("(do not copy it verbatim into your reply):\n");
+            for (Map.Entry<String, String> entry : contents.entrySet()) {
+                prompt.append("--- ").append(entry.getKey()).append(" ---\n")
+                        .append(entry.getValue()).append("\n");
+            }
+        }
+
         Map<String, String> locations = session.artifactPaths();
         if (!locations.isEmpty()) {
             prompt.append("\nFiles already created in this request:\n");
             for (Map.Entry<String, String> entry : locations.entrySet()) {
                 prompt.append("- ").append(entry.getKey()).append(" file: ").append(entry.getValue()).append("\n");
             }
-            if (role.needsArtifactContent()) {
-                // A role that builds on or reviews prior artifacts (the plan uses the goal; the reviewers
-                // analyse the plan) is shown their full content.
-                Map<String, String> contents = session.artifactContents();
-                prompt.append("\nContent of those files, for your reference ")
-                        .append("(do not copy it verbatim into your reply):\n");
-                for (Map.Entry<String, String> entry : contents.entrySet()) {
-                    prompt.append("--- ").append(entry.getKey()).append(" ---\n")
-                            .append(entry.getValue()).append("\n");
-                }
-            } else {
+            if (!role.needsArtifactContent()) {
                 // A pure reporting role only needs the locations; withholding the content stops it from
                 // pasting a file's body where its path belongs. The exact links are appended by the
                 // engine when the run completes (see withArtifactLinks).

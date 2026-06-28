@@ -90,6 +90,14 @@ public class RoleFlowSession {
         artifactPaths.put(kind, path);
     }
 
+    /**
+     * Records an artifact's content without giving it a file of its own. Used for the goal, which is not
+     * written to a separate file but becomes the first section of the combined plan document.
+     */
+    public void setArtifactContent(String kind, String content) {
+        artifactContents.put(kind, content);
+    }
+
     public String currentRole() {
         return currentRole;
     }

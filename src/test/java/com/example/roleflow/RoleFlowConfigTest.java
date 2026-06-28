@@ -171,6 +171,22 @@ class RoleFlowConfigTest {
     }
 
     @Test
+    void verificationAndNextStepsPromptsDistinguishChangeableFromInformationOnlyState() throws Exception {
+        RoleFlowConfig config = new RoleFlowConfig(
+                RoleFlowConfig.parse(Files.readString(Path.of("config/roleflow.active"))));
+
+        // PlanBuilder's prompt teaches the changeable vs information-only distinction for Phase 3 and Phase 4.
+        String planBuilder = config.byName("PlanBuilder").action().toLowerCase();
+        assertTrue(planBuilder.contains("information-only"), "PlanBuilder must explain information-only state");
+        assertTrue(planBuilder.contains("changeable"), "PlanBuilder must explain changeable state");
+        assertTrue(planBuilder.contains("verification") && planBuilder.contains("next steps"));
+
+        // PlanReviewer flags steps that try to change an information-only result.
+        String planReviewer = config.byName("PlanReviewer").action().toLowerCase();
+        assertTrue(planReviewer.contains("information-only"), "PlanReviewer must flag information-only changes");
+    }
+
+    @Test
     void clarifierUsesTheAwaitSentinelToWaitForTheUser() throws Exception {
         RoleFlowConfig config = new RoleFlowConfig(
                 RoleFlowConfig.parse(Files.readString(Path.of("config/roleflow.active"))));
