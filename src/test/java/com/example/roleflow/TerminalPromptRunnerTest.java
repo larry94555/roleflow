@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.util.ReflectionTestUtils.setField;
 
@@ -21,6 +22,7 @@ class TerminalPromptRunnerTest {
         final List<String> prompts = new ArrayList<>();
         final List<String> auditIds = new ArrayList<>();
         boolean fail;
+        boolean awaiting;
         String response; // when set, returned verbatim (e.g. to include a file link)
 
         StubConversationService() {
@@ -34,6 +36,11 @@ class TerminalPromptRunnerTest {
             auditIds.add(auditId);
             if (fail) throw new IllegalStateException("server down");
             return response != null ? response : "echo:" + userPrompt;
+        }
+
+        @Override
+        public boolean awaitingReply() {
+            return awaiting;
         }
     }
 
@@ -117,6 +124,31 @@ class TerminalPromptRunnerTest {
 
         assertEquals(1, opened.size(), "the browser should open once per session, not per prompt");
         assertTrue(opened.get(0).contains("/audit.html?prompt="), opened.toString());
+    }
+
+    @Test
+    void showsThinkingWhileWorkingAndWaitingPromptWhenAReplyIsNeeded() {
+        StubConversationService service = new StubConversationService();
+        service.response = "Which folder should I back up?";
+        service.awaiting = true; // the workflow paused for a clarifying answer
+        TerminalPromptRunner runner = new TerminalPromptRunner(service);
+
+        String output = runLoop(runner, "back up my notes\n");
+
+        assertTrue(output.contains("thinking..."), "a 'thinking...' cue should show while the agent works");
+        assertTrue(output.contains("waiting for a reply..."), "the prompt should signal a reply is expected");
+    }
+
+    @Test
+    void showsTheReadyPromptWhenNoReplyIsNeeded() {
+        StubConversationService service = new StubConversationService();
+        service.awaiting = false; // the run completed; ready for a new request
+
+        String output = runLoop(new TerminalPromptRunner(service), "hello\n");
+
+        assertTrue(output.contains("thinking..."), output);
+        assertFalse(output.contains("waiting for a reply..."), "no reply cue when the run is complete");
+        assertTrue(output.contains("RoleFlow> "), output);
     }
 
     @Test

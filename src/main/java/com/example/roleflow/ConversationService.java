@@ -78,6 +78,16 @@ public class ConversationService {
         }
     }
 
+    /**
+     * True when the workflow is paused mid-flow waiting for the user's next prompt (a clarifying answer).
+     * Used by the terminal to show whether a reply is expected. False in plain (no-workflow) mode.
+     */
+    public boolean awaitingReply() {
+        synchronized (memory) {
+            return roleFlow.isActive() && engine.isAwaitingReply();
+        }
+    }
+
     /** Single-call path (no workflow), still audited under a synthetic run id so the web view works. */
     private String runPlain(String systemOverride, String userPrompt, Integer maxTokens, Double temperature,
                             String auditId, String source) throws Exception {

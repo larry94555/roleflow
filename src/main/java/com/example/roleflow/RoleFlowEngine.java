@@ -61,6 +61,15 @@ public class RoleFlowEngine {
     }
 
     /**
+     * True when a run is paused mid-flow waiting for the user's next prompt (a clarifying answer), i.e. the
+     * previous {@code run} returned at an {@code await} without completing. Lets a caller (the terminal) show
+     * the user whether a reply is expected.
+     */
+    public boolean isAwaitingReply() {
+        return !session.isIdle();
+    }
+
+    /**
      * Runs the workflow for one user prompt and returns the text to show the user (the message from the
      * role where the run completed or paused for clarification). Every step is recorded to the audit trail
      * for {@code runId}; {@code auditId} (an optional client-supplied id) is linked to that run so the

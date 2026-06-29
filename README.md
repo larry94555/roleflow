@@ -256,23 +256,32 @@ run statelessly — keeping memory clean so the model doesn't echo its own earli
 
 ```
 RoleFlow> thanks!
+thinking...                                      <-- shown while the agent works, then replaced
 You're welcome!                                  <-- signal: 2 calls, no files
 
 RoleFlow> Set up a weekly backup of my notes folder
+thinking...
 To make sure I get this right: should the backup run every week indefinitely,
-and where should the copies be stored?           <-- request needed clarification (paused)
-RoleFlow> Yes, weekly forever, store them on my external drive
+and where should the copies be stored?
+waiting for a reply... > Yes, weekly forever, store them on my external drive
+thinking...
 Your request has been turned into a goal and a plan.
 Plan file:  file:///…/goals/plan_backup-notes_20260625-101500.md   <-- clickable: opens the rendered view
-🔎 View audit trail ↗                                          <-- clickable: opens the audit web page
+View audit trail (Ctrl+click to open)                          <-- clickable: opens the audit web page
+RoleFlow>
 ```
 
+The prompt makes the state clear: **`thinking...`** is shown while the agent is working (you are not
+expected to type), it is erased when the reply arrives, and the prompt becomes **`waiting for a reply...`**
+when the agent paused for a clarifying answer — otherwise it returns to the ready **`RoleFlow>`** prompt.
+
 Just like the web page, the terminal renders the plan-file and audit links as **clickable hyperlinks**
-(using OSC 8, supported by Windows Terminal, iTerm2, GNOME Terminal, etc.): the plan link opens the same
-GitHub-style **rendered** view served at `/goals/<name>`, and the audit link opens the live **audit web
-page** for that prompt (which also opens automatically once per terminal session). So the command line and
-the web flow stay in sync. Terminals that don't support hyperlinks just show the link text; you can disable
-the escape codes with `roleflow.terminal.hyperlinks=false`.
+(using OSC 8, supported by Windows Terminal, iTerm2, GNOME Terminal, etc.) shown in **blue/underline**:
+the plan link opens the same GitHub-style **rendered** view served at `/goals/<name>`, and the audit link
+opens the live **audit web page** for that prompt (which also opens automatically once per terminal
+session). **Ctrl+click** (Cmd+click on macOS) opens a link. So the command line and the web flow stay in
+sync. Terminals that don't support hyperlinks just show the plain link text; you can disable the escape
+codes with `roleflow.terminal.hyperlinks=false`.
 
 The file name starts with a short, human-readable **prefix** summarizing the session's first prompt
 (`backup-notes`), so files made on the same day are easy to tell apart. The prefix is kept

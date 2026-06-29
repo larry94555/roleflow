@@ -77,11 +77,17 @@ public class TerminalPromptRunner implements CommandLineRunner {
      * Prompt/response loop. Reads one line at a time, sends it to llama-server, and prints the reply with
      * clickable file/audit links. Stops on end-of-input or when the user types {@code exit} or {@code quit}.
      */
+    private static final String READY_PROMPT = "RoleFlow> ";
+    // Shown as the prompt when the workflow paused for a clarifying answer, so the user knows to reply.
+    private static final String REPLY_PROMPT = "waiting for a reply... > ";
+    // Shown while the agent works (and then erased), so the user knows it is busy, not waiting on them.
+    private static final String THINKING = "thinking...";
+
     void loop(BufferedReader in, PrintStream out) {
         out.println("RoleFlow terminal ready. Type a prompt and press Enter (type 'exit' or 'quit' to stop).");
         try {
             String line;
-            out.print("RoleFlow> ");
+            out.print(promptFor());
             out.flush();
             while ((line = in.readLine()) != null) {
                 String prompt = line.trim();
@@ -90,21 +96,42 @@ public class TerminalPromptRunner implements CommandLineRunner {
                 }
                 if (!prompt.isEmpty()) {
                     String auditId = auditIds.get();
+                    out.print(THINKING);   // the agent is working; the user is not expected to type yet
+                    out.flush();
                     try {
                         String reply = conversation.reply(null, prompt, null, null, auditId, "terminal");
+                        eraseThinking(out);
                         out.println(links.linkifyFiles(reply));
                         out.println(links.auditLine(auditId));
                         openAuditOnce(auditId);
                     } catch (Exception e) {
+                        eraseThinking(out);
                         out.println("[error] " + e.getMessage());
                     }
                 }
-                out.print("RoleFlow> ");
+                // The prompt now reflects whether the agent is waiting for the user to reply.
+                out.print(promptFor());
                 out.flush();
             }
         } catch (Exception e) {
             out.println("[error] terminal input closed: " + e.getMessage());
         }
+    }
+
+    /** "waiting for a reply..." when the workflow paused for a clarifying answer, otherwise the ready prompt. */
+    private String promptFor() {
+        boolean awaiting;
+        try {
+            awaiting = conversation.awaitingReply();
+        } catch (Exception e) {
+            awaiting = false;
+        }
+        return awaiting ? REPLY_PROMPT : READY_PROMPT;
+    }
+
+    /** Clears the "thinking..." cue from the current line before the reply is printed. */
+    private static void eraseThinking(PrintStream out) {
+        out.print("\r" + " ".repeat(THINKING.length()) + "\r");
     }
 
     /** Opens the audit page in the browser once per session (like the web page), if enabled. */

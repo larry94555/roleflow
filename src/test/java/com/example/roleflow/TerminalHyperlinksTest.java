@@ -37,6 +37,9 @@ class TerminalHyperlinksTest {
     void buildsAClickableAuditLine() {
         String line = links.auditLine("p-1 2");
         assertTrue(line.contains(ESC + "]8;;http://localhost:8080/audit.html?prompt=p-1+2" + ESC + "\\"), line);
+        // Plain ASCII visible text (no emoji), coloured blue + underlined so it reads as a link.
+        assertTrue(line.contains("View audit trail (Ctrl+click to open)"), line);
+        assertTrue(line.contains(ESC + "[34m") && line.contains(ESC + "[0m"), "the link text is coloured");
     }
 
     @Test

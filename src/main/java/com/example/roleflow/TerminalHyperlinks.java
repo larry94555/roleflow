@@ -17,9 +17,19 @@ final class TerminalHyperlinks {
     /** The ASCII escape character (27); written as a code point so no raw control byte lives in the source. */
     private static final char ESC = (char) 27;
 
+    // ANSI SGR colour codes used to make the visible link text look like a link (blue + underline).
+    private static final String BLUE = ESC + "[34m";
+    private static final String UNDERLINE = ESC + "[4m";
+    private static final String RESET = ESC + "[0m";
+
     /** OSC 8 hyperlink: ESC ] 8 ; ; &lt;url&gt; ST &lt;text&gt; ESC ] 8 ; ; ST (ST = ESC backslash). */
     static String osc8(String url, String text) {
         return ESC + "]8;;" + url + ESC + "\\" + text + ESC + "]8;;" + ESC + "\\";
+    }
+
+    /** Wraps the visible link text in blue + underline so it stands out, then resets the colour. */
+    private static String coloured(String text) {
+        return BLUE + UNDERLINE + text + RESET;
     }
 
     // The same file-link shape the web page rewrites: a file:// URL ending in a plain <name>.md.
@@ -46,7 +56,7 @@ final class TerminalHyperlinks {
         StringBuilder out = new StringBuilder();
         while (matcher.find()) {
             String rendered = baseUrl + "/goals/" + matcher.group(1);
-            matcher.appendReplacement(out, Matcher.quoteReplacement(osc8(rendered, matcher.group())));
+            matcher.appendReplacement(out, Matcher.quoteReplacement(osc8(rendered, coloured(matcher.group()))));
         }
         matcher.appendTail(out);
         return out.toString();
@@ -60,6 +70,10 @@ final class TerminalHyperlinks {
     /** A one-line clickable pointer to this prompt's audit trail (or the plain URL when disabled). */
     String auditLine(String auditId) {
         String url = auditUrl(auditId);
-        return enabled ? osc8(url, "🔎 View audit trail ↗") : "Audit trail: " + url;
+        // Plain ASCII text (no emoji, which terminals on legacy code pages render as "?"), coloured so it
+        // looks like a link. Ctrl+click opens it in supporting terminals (Windows Terminal, iTerm2, …).
+        return enabled
+                ? osc8(url, coloured("View audit trail (Ctrl+click to open)"))
+                : "Audit trail: " + url;
     }
 }
