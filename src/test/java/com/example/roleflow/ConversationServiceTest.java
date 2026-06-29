@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -118,5 +119,44 @@ class ConversationServiceTest {
         AuditView view = audit.viewByPrompt("PID-web");
         assertTrue(view.completed());
         assertEquals("web", view.source());
+    }
+
+    @Test
+    void workflowRecordsOneExchangePerTurnNotOnePerRole() throws Exception {
+        // The internal role calls must not each be recorded into memory (which would make a small model echo
+        // its own previous output); only one exchange per user turn is kept.
+        RoleFlowConfig active = new RoleFlowConfig(RoleFlowConfig.parse(
+                "1. SignalOrRequest\nRole: Classifier\nAction: classify\n"
+                        + "Transition: signal -> SignalResponse, request -> HandleRequest\n"
+                        + "2. SignalResponse\nRole: Responder\nAction: respond\nTransition: done\n"));
+        FakeLlamaClient llama = new FakeLlamaClient(
+                "{\"message\":\"is a signal\",\"decision\":\"signal\"}", // turn 1, role 1
+                "{\"message\":\"Hi there!\",\"decision\":\"done\"}",      // turn 1, role 2 (the answer)
+                "{\"message\":\"is a signal\",\"decision\":\"signal\"}", // turn 2, role 1
+                "{\"message\":\"Bye!\",\"decision\":\"done\"}");          // turn 2, role 2
+        AuditService audit = new AuditService(50);
+        RoleFlowEngine engine = new RoleFlowEngine(active, new RoleFlowSession(),
+                new GoalFileWriter(Path.of("target/test-goals")), new SessionLabeler("target/test-goals"),
+                audit, null, new SkillRegistry(List.of()), new ObjectMapper(), 20);
+        ConversationService service = new ConversationService(
+                memory((p, m) -> "", 8192), llama, active, engine, audit, 1024, "");
+
+        service.reply(null, "Hello", null, null, "T1", "web");
+        // Role 2's request must NOT carry role 1's reply (the intra-run output is not in memory).
+        assertFalse(contentsOf(llama.payloads.get(1)).stream().anyMatch(c -> c.contains("is a signal")),
+                "an intermediate role's reply must not pollute the conversation memory");
+
+        service.reply(null, "Hello again", null, null, "T2", "web");
+        // Turn 2's first request carries the PRIOR turn's final answer (one recorded exchange), not the
+        // intermediate role output.
+        List<String> turn2First = contentsOf(llama.payloads.get(2));
+        assertTrue(turn2First.stream().anyMatch(c -> c.contains("Hi there!")),
+                "the prior turn's answer should be in context");
+        assertFalse(turn2First.stream().anyMatch(c -> c.contains("is a signal")),
+                "intermediate role output should not be in context");
+    }
+
+    private static List<String> contentsOf(List<Map<String, Object>> payload) {
+        return payload.stream().map(m -> (String) m.get("content")).toList();
     }
 }

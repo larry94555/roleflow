@@ -61,6 +61,15 @@ public class RoleFlowEngine {
     }
 
     /**
+     * True when a run is paused mid-flow waiting for the user's next prompt (a clarifying answer), i.e. the
+     * previous {@code run} returned at an {@code await} without completing. Lets a caller (the terminal) show
+     * the user whether a reply is expected.
+     */
+    public boolean isAwaitingReply() {
+        return !session.isIdle();
+    }
+
+    /**
      * Runs the workflow for one user prompt and returns the text to show the user (the message from the
      * role where the run completed or paused for clarification). Every step is recorded to the audit trail
      * for {@code runId}; {@code auditId} (an optional client-supplied id) is linked to that run so the
@@ -123,12 +132,17 @@ public class RoleFlowEngine {
             }
 
             // A role that provides a TODO list (PlanDetailReviewer) feeds the steps it flagged as needing more
-            // detail into the session, for PlanDetailer to refine. A "sufficient" decision means none.
+            // detail into the session, for PlanDetailer to refine. The engine then routes on the PARSED TODO
+            // list rather than the model's decision word (which a small model gets wrong): any flagged step
+            // means "update" (go to PlanDetailer); an empty list (or a "sufficient" decision) means
+            // "sufficient". This keeps the transition consistent with what was actually parsed.
+            String decisionOverride = null;
             if (role.providesTodos()) {
                 List<TodoItem> todos = "sufficient".equalsIgnoreCase(reply.decision())
                         ? List.of()
                         : TodoList.parse(reply.artifact().isBlank() ? reply.message() : reply.artifact());
                 session.setTodos(todos);
+                decisionOverride = todos.isEmpty() ? "sufficient" : "update";
                 audit.validation(runId, role.name(), todos.isEmpty()
                         ? "plan is sufficiently detailed"
                         : "plan needs more detail for " + todos.size() + " step(s)");
@@ -168,10 +182,11 @@ public class RoleFlowEngine {
                 }
             }
 
-            // The decision that drives the transition is normally the model's reply. A role with an iteration
-            // limit (PlanDetailer) instead transitions on a synthetic "limit" decision once it has run the
-            // capped number of times, so a refinement loop cannot run forever.
-            String decision = reply.decision();
+            // The decision that drives the transition is normally the model's reply, unless the engine derived
+            // one above (e.g. PlanDetailReviewer's update/sufficient from its TODO list). A role with an
+            // iteration limit (PlanDetailer) instead transitions on a synthetic "limit" decision once it has
+            // run the capped number of times, so a refinement loop cannot run forever.
+            String decision = decisionOverride != null ? decisionOverride : reply.decision();
             if (role.hasIterationLimit()) {
                 int count = session.incrementIteration(role.name());
                 if (count >= role.iterationLimit()) {
@@ -404,10 +419,32 @@ public class RoleFlowEngine {
         audit.roleResult(runId, function.name(), detail, outcome.reply().decision());
 
         String body = outcome.artifact().isBlank() ? detail : outcome.artifact();
+        // A classifying function (e.g. ActionPlanner) chooses one of a fixed set of categories; record which
+        // one the reply states so the classification is visible in the audit trail.
+        if (function.classifiesResult()) {
+            String category = detectCategory(body, function.classifies());
+            audit.validation(runId, function.name(), category == null
+                    ? "did not state a recognized category (one of: "
+                            + String.join(", ", function.classifies()) + ")"
+                    : "classified the step as '" + category + "'");
+        }
         session.addStepSection(heading + "\n\n" + body.strip());
         rewritePlanWithStepSections(runId, function.name());
         // A function returns to its caller rather than transitioning; record the return like a transition.
         audit.transition(runId, function.name(), "return -> " + caller.name() + " (function returned)");
+    }
+
+    /** Returns the longest category from {@code categories} that appears in {@code text}, or null if none. */
+    private static String detectCategory(String text, List<String> categories) {
+        String haystack = text == null ? "" : text.toLowerCase(java.util.Locale.ROOT);
+        String best = null;
+        for (String category : categories) {
+            if (haystack.contains(category.toLowerCase(java.util.Locale.ROOT))
+                    && (best == null || category.length() > best.length())) {
+                best = category; // prefer the most specific match (e.g. "write and run code" over "write code")
+            }
+        }
+        return best;
     }
 
     /** Recomposes the plan file to include the step-detail sections gathered so far and records the write. */
@@ -588,7 +625,9 @@ public class RoleFlowEngine {
             }
         }
 
-        Map<String, String> locations = session.artifactPaths();
+        // A function is a focused sub-step (it classifies/details ONE item given to it); it does not need the
+        // file locations, which would only add noise it might copy.
+        Map<String, String> locations = role.isFunction() ? Map.of() : session.artifactPaths();
         if (!locations.isEmpty()) {
             prompt.append("\nFiles already created in this request:\n");
             for (Map.Entry<String, String> entry : locations.entrySet()) {

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RoleFlowReplyTest {
 
@@ -61,6 +62,19 @@ class RoleFlowReplyTest {
 
         assertEquals("continue", reply.decision(), "decision must be read despite the literal newline");
         assertEquals("Line one\nLine two", reply.message());
+    }
+
+    @Test
+    void parsesAReplyWithInvalidLatexBackslashEscapesInAString() {
+        // Models often put LaTeX like "\( n^2 \)" in the message. "\(" is an invalid JSON escape, which would
+        // make strict parsing fail and lose the decision; the parser must tolerate it so the decision stands.
+        String raw = "{\"message\": \"There is a prime between \\( n^2 \\) and \\( (n+1)^2 \\). OK?\", "
+                + "\"decision\": \"unclear\", \"artifact\": \"\"}";
+
+        RoleFlowReply reply = RoleFlowReply.parse(raw, mapper);
+
+        assertEquals("unclear", reply.decision(), "the decision must survive invalid LaTeX escapes");
+        assertTrue(reply.message().contains("n^2"), reply.message());
     }
 
     @Test

@@ -16,8 +16,10 @@
         </encoder>
     </appender>
 
-    <!-- The dedicated audit logger writes to the audit file and (via the root) the console too. -->
-    <logger name="com.example.roleflow.audit" level="INFO" additivity="true">
+    <!-- The dedicated audit logger writes ONLY to the audit file (additivity="false"), so the full audit
+         trail — including the system prompts logged for every role — does not flood the terminal console.
+         The trail is read back through the audit web page (audit.html) and `tail -f audit.log` instead. -->
+    <logger name="com.example.roleflow.audit" level="INFO" additivity="false">
         <appender-ref ref="AUDIT_FILE"/>
     </logger>
 

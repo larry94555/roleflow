@@ -63,10 +63,28 @@ public class ConversationService {
         // consistent even if the web page and terminal are used at the same time.
         synchronized (memory) {
             if (roleFlow.isActive()) {
-                return engine.run(userPrompt, systemOverride, maxTokens, temperature, this::runModel,
-                        auditId, source);
+                // The workflow makes MANY model calls per turn (one per role, plus one per per-step function).
+                // Those internal calls must NOT each be recorded into the conversation memory: the user prompt
+                // is identical across them, so recording every role's reply fills memory with near-duplicate
+                // turns and makes a small model echo its own previous output instead of doing each role. Each
+                // role is already given the goal/plan/step-details it needs via its system prompt, so the
+                // calls run statelessly and we record a SINGLE exchange (prompt -> final answer) for the turn.
+                String response = engine.run(userPrompt, systemOverride, maxTokens, temperature,
+                        this::runModelStateless, auditId, source);
+                memory.recordExchange(userPrompt, response);
+                return response;
             }
             return runPlain(systemOverride, userPrompt, maxTokens, temperature, auditId, source);
+        }
+    }
+
+    /**
+     * True when the workflow is paused mid-flow waiting for the user's next prompt (a clarifying answer).
+     * Used by the terminal to show whether a reply is expected. False in plain (no-workflow) mode.
+     */
+    public boolean awaitingReply() {
+        synchronized (memory) {
+            return roleFlow.isActive() && engine.isAwaitingReply();
         }
     }
 
@@ -96,11 +114,21 @@ public class ConversationService {
      */
     private String runModel(String systemPrompt, String userPrompt, Integer maxTokens, Double temperature)
             throws Exception {
+        String reply = runModelStateless(systemPrompt, userPrompt, maxTokens, temperature);
+        memory.recordExchange(userPrompt, reply);
+        return reply;
+    }
+
+    /**
+     * Makes one model call against the current memory WITHOUT recording the exchange. Used for the workflow's
+     * internal role/function calls so they do not pollute the conversation memory (see {@link #reply}); the
+     * caller records a single exchange for the whole turn.
+     */
+    private String runModelStateless(String systemPrompt, String userPrompt, Integer maxTokens,
+                                     Double temperature) throws Exception {
         int responseReserve = maxTokens != null && maxTokens > 0 ? maxTokens : defaultResponseTokens;
         List<Message> toSend = memory.prepareRequest(systemPrompt, userPrompt, responseReserve);
         List<Map<String, Object>> payload = toSend.stream().map(Message::toMap).toList();
-        String reply = llama.chat(payload, maxTokens, temperature);
-        memory.recordExchange(userPrompt, reply);
-        return reply;
+        return llama.chat(payload, maxTokens, temperature);
     }
 }

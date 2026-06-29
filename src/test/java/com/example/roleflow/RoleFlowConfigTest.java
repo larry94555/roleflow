@@ -138,7 +138,18 @@ class RoleFlowConfigTest {
         for (String fn : List.of("SubgoalPlanner", "ActionPlanner", "InformationPlanner", "DecisionPlanner")) {
             assertTrue(config.byName(fn).isFunction(), fn + " should be a function");
             assertEquals("return", config.byName(fn).resolve("anything"), fn + " returns to its caller");
+            // A function gets a focused prompt (just its one item) — it does not read the whole plan.
+            assertFalse(config.byName(fn).needsArtifactContent(), fn + " should not read prior artifacts");
         }
+
+        // The classifying functions declare their fixed category sets so the engine can audit the choice.
+        Role actionPlanner = config.byName("ActionPlanner");
+        assertTrue(actionPlanner.classifiesResult());
+        assertTrue(actionPlanner.classifies().contains("write code"));
+        assertTrue(actionPlanner.classifies().contains("write and run code"));
+        assertTrue(config.byName("InformationPlanner").classifies().contains("request from web"));
+        assertTrue(config.byName("DecisionPlanner").classifies().contains("will ask user"));
+        assertFalse(config.byName("SubgoalPlanner").classifiesResult(), "SubgoalPlanner is free-form");
 
         // PlanDetailReviewer provides the TODO list and loops to PlanDetailer when an update is needed.
         Role detailReviewer = config.byName("PlanDetailReviewer");
@@ -227,6 +238,9 @@ class RoleFlowConfigTest {
         assertEquals("await", handleRequest.resolve("unclear"));
         assertEquals("GoalBuilder", handleRequest.resolve("clear"));
         assertEquals("done", handleRequest.resolve("cancelled"));
+        // Capped at 2 entries: after one clarifying question the engine forces it to proceed, not loop.
+        assertEquals(2, handleRequest.iterationLimit());
+        assertEquals("GoalBuilder", handleRequest.resolve("limit"));
     }
 
     @Test

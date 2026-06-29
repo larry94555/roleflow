@@ -26,8 +26,8 @@ public class RoleFlowConfig {
 
     private static final Pattern ROLE_HEADER = Pattern.compile("^\\s*(\\d+)\\.\\s+([A-Za-z][\\w-]*)\\s*$");
     private static final Pattern FIELD_HEADER = Pattern.compile(
-            "^\\s*(Role|Action|Output|Reads|Compute|Research|Provides|Skills|Kind|Calls|Iteration|Transition)"
-                    + "\\s*:(.*)$");
+            "^\\s*(Role|Action|Output|Reads|Compute|Research|Provides|Skills|Kind|Calls|Iteration|Classifies"
+                    + "|Transition)\\s*:(.*)$");
 
     private final List<Role> roles;
     private final Map<String, Role> byName;
@@ -147,9 +147,25 @@ public class RoleFlowConfig {
         // Iteration field: the first integer found is the role's max runs per request (0 = no limit).
         int iterationLimit = parseIterationLimit(value(fields, "iteration"));
 
+        // Classifies field: the fixed category phrases a classifying function chooses from (comma-separated,
+        // each may contain spaces, e.g. "write and run code").
+        List<String> classifies = parseCategories(value(fields, "classifies"));
+
         List<Role.Transition> transitions = parseTransitions(value(fields, "transition"));
         result.add(new Role(number, name, title, action, outputKind, outputMandatory, readsArtifacts,
-                compute, researchesTopic, provides, skills, kind, calls, iterationLimit, transitions));
+                compute, researchesTopic, provides, skills, kind, calls, iterationLimit, classifies,
+                transitions));
+    }
+
+    /** Parses a comma/semicolon-separated list of (possibly multi-word) category phrases. */
+    private static List<String> parseCategories(String text) {
+        if (text == null || text.isBlank()) return List.of();
+        List<String> categories = new ArrayList<>();
+        for (String part : text.split("[,;\\n]")) {
+            String category = part.trim();
+            if (!category.isEmpty() && !"none".equalsIgnoreCase(category)) categories.add(category);
+        }
+        return List.copyOf(categories);
     }
 
     /** Extracts the iteration cap from an Iteration field (e.g. "Use a variable i ... only 3 times" -> 3). */

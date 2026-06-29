@@ -43,6 +43,10 @@ public record RoleFlowReply(String message, String decision, String artifact) {
             // Allow raw newlines/tabs inside JSON strings — models often format the artifact/message with
             // real line breaks rather than \n, which strict JSON would reject.
             parser.enable(JsonParser.Feature.ALLOW_UNQUOTED_CONTROL_CHARS);
+            // Tolerate invalid backslash escapes (e.g. LaTeX like "\( n^2 \)") inside strings: a model often
+            // emits these, and strict JSON would reject the whole reply, losing the decision. With this on,
+            // "\(" is read as "(", so the reply still parses and the transition decision is preserved.
+            parser.enable(JsonParser.Feature.ALLOW_BACKSLASH_ESCAPING_ANY_CHARACTER);
             if (parser.nextToken() != JsonToken.START_OBJECT) {
                 return null;
             }

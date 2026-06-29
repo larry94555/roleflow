@@ -94,13 +94,19 @@ prompt being processed step by step and scroll through the full trail.
 The link is available immediately (the page creates the audit id before sending), so you can watch from
 the very first role.
 
-### By run id (e.g. for a terminal prompt)
+### From the terminal
 
-Terminal prompts are audited too. Find the `run=<id>` value in `audit.log`, then open:
+Terminal prompts are audited the same way. After each prompt the terminal prints a **clickable** audit-trail
+link (and opens the audit web page in your browser once per session, like the prompt web page does), so you
+can watch the run live without leaving the command line. You can also open it by run id — find the
+`run=<id>` value in `audit.log`, then open:
 
 ```
 http://localhost:8080/audit.html?run=<run-id>
 ```
+
+(Clickable links and auto-open can be turned off with `roleflow.terminal.hyperlinks=false` and
+`roleflow.terminal.open-audit=false`.)
 
 ### Endpoints (if you want the raw JSON)
 

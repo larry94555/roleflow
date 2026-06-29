@@ -32,12 +32,21 @@ import java.util.List;
  *                        calls a function for each classified step (StepReviewer); empty for most roles.
  * @param iterationLimit  the maximum number of times this role may run in a single request before the engine
  *                        forces its {@code limit} transition (used to bound a refinement loop); 0 = no limit.
+ * @param classifies      for a classifying function, the fixed category phrases it chooses from (e.g.
+ *                        "write code", "invoke a tool"); the engine detects which one the reply states and
+ *                        records it in the audit trail. Empty for roles that do not classify into a fixed set.
  * @param transitions     ordered decision-to-target rules
  */
 public record Role(int number, String name, String title, String action, String outputKind,
                    boolean outputMandatory, boolean readsArtifacts, String compute,
                    boolean researchesTopic, String provides, List<String> skills, String kind,
-                   List<Transition> calls, int iterationLimit, List<Transition> transitions) {
+                   List<Transition> calls, int iterationLimit, List<String> classifies,
+                   List<Transition> transitions) {
+
+    /** True when this role classifies its result into one of a fixed set of category phrases. */
+    public boolean classifiesResult() {
+        return classifies != null && !classifies.isEmpty();
+    }
 
     /** True when this role's output is parsed into the session's list of topics. */
     public boolean providesTopics() {

@@ -302,6 +302,35 @@ class RoleFlowEngineTest {
     }
 
     @Test
+    void handleRequestStopsAskingTheSameQuestionAfterTheIterationCap() throws Exception {
+        // A stubborn model that keeps returning "unclear" must not loop forever: the iteration cap forces
+        // HandleRequest to proceed after a single clarifying question (the reported bug).
+        ScriptedModel model = new ScriptedModel()
+                .on("SignalOrRequest", json("request", "a request"))
+                .always("HandleRequest", json("unclear", "Are you sure?")) // always asks again
+                .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
+                .on("PlanBuilder", jsonWithArtifact("continue", "plan built", VALID_PLAN))
+                .on("PlanReviewer", json("ok", "no change"))
+                .on("ResponseBuilder", json("done", "Done."));
+
+        // First turn: asks once and pauses for the answer.
+        String question = engine.run("Build me a report", null, null, null, model, "PID-clar", "web");
+        assertEquals("Are you sure?", question);
+        assertFalse(session.isIdle(), "paused at the clarifier");
+
+        // Second turn: must NOT ask again — the cap forces it forward to GoalBuilder and the run completes.
+        String result = engine.run("Yes", null, null, null, model, "PID-clar2", "web");
+        assertTrue(session.isIdle(), "the run completes instead of asking the same question again");
+        assertTrue(result.startsWith("Done."), result);
+
+        List<AuditEvent> events = audit.viewByPrompt("PID-clar2").events();
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.VALIDATION
+                && "HandleRequest".equals(e.role()) && e.detail().contains("reached the limit")));
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
+                && "HandleRequest".equals(e.role()) && e.transition().contains("'limit' -> GoalBuilder")));
+    }
+
+    @Test
     void cancelledRequestEndsWithoutFiles() throws Exception {
         ScriptedModel model = new ScriptedModel()
                 .on("SignalOrRequest", json("request", "This is a request"))
@@ -430,6 +459,15 @@ class RoleFlowEngineTest {
                 && "DecisionPlanner".equals(e.role()) && e.transition().contains("return -> StepReviewer")),
                 "a function returns to its caller rather than transitioning onward");
 
+        // A classifying function records WHICH category it chose in the audit trail (the reported bug).
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.VALIDATION
+                && "ActionPlanner".equals(e.role())
+                && e.detail().contains("classified the step as 'write code'")),
+                "ActionPlanner must record its chosen category in the audit");
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.VALIDATION
+                && "InformationPlanner".equals(e.role())
+                && e.detail().contains("classified the step as 'request from web'")));
+
         // The function's prompt tells the model to describe the step directly, not narrate "The first step is".
         AuditEvent functionRequest = events.stream()
                 .filter(e -> e.type() == AuditEvent.Type.MODEL_REQUEST && "DecisionPlanner".equals(e.role()))
@@ -438,6 +476,36 @@ class RoleFlowEngineTest {
                 "the prompt should explicitly steer away from \"The first step is\" narration");
         assertTrue(functionRequest.systemPrompt().contains("Describe it DIRECTLY"),
                 functionRequest.systemPrompt());
+
+        // A function gets a FOCUSED prompt: only the single item it details, not the whole goal/plan, the
+        // accumulated step-details, or the file locations (which it would otherwise copy instead of classify).
+        String fnPrompt = functionRequest.systemPrompt();
+        assertTrue(fnPrompt.contains("Item (classified as"), "the function is given its one item");
+        assertFalse(fnPrompt.contains("--- plan ---"), "a function must not be shown the whole plan");
+        assertFalse(fnPrompt.contains("--- step details ---"), "a function must not be shown all step details");
+        assertFalse(fnPrompt.contains("Files already created"), "a function does not need file locations");
+    }
+
+    @Test
+    void aClassifyingFunctionRecordsWhenItDidNotStateARecognizedCategory() throws Exception {
+        // The reported bug: ActionPlanner returns generic prose with no category, so the audit should call
+        // that out rather than silently omitting the classification.
+        ScriptedModel model = new ScriptedModel()
+                .on("SignalOrRequest", json("request", "a request"))
+                .on("HandleRequest", json("clear", "Criteria"))
+                .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
+                .on("PlanBuilder", jsonWithArtifact("continue", "plan built", VALID_PLAN))
+                .on("PlanReviewer", json("ok", "no change"))
+                .always("ActionPlanner", json("return", "The application will run through the integers."))
+                .on("ResponseBuilder", json("done", "Done."));
+
+        engine.run("Build me a report", null, null, null, model, "PID-noclass", "web");
+
+        List<AuditEvent> events = audit.viewByPrompt("PID-noclass").events();
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.VALIDATION
+                && "ActionPlanner".equals(e.role())
+                && e.detail().contains("did not state a recognized category")),
+                "an unclassified action must be flagged in the audit");
     }
 
     @Test
@@ -479,6 +547,34 @@ class RoleFlowEngineTest {
         assertTrue(subgoalPrompts.stream().anyMatch(p -> p.contains("AMBIGUOUS")), subgoalPrompts.toString());
         assertTrue(subgoalPrompts.stream().anyMatch(p -> p.contains("TOO HIGH-LEVEL")),
                 subgoalPrompts.toString());
+    }
+
+    @Test
+    void planDetailReviewerRoutesOnTheTodoListNotTheModelsDecisionWord() throws Exception {
+        // The reported bug: the model returns an invalid/echoed decision but still flags steps; the engine
+        // must route on the parsed TODO list (-> PlanDetailer), not fall through to ResponseBuilder.
+        ScriptedModel model = new ScriptedModel()
+                .on("SignalOrRequest", json("request", "a request"))
+                .on("HandleRequest", json("clear", "Criteria"))
+                .on("GoalBuilder", jsonWithArtifact("continue", "goal built", "# Goal"))
+                .on("PlanBuilder", jsonWithArtifact("continue", "plan built", VALID_PLAN))
+                .on("PlanReviewer", json("ok", "no change"))
+                .on("PlanDetailReviewer",
+                        jsonWithArtifact("write code", "echoed nonsense", "ambiguous: install Python"),
+                        json("sufficient", "now complete"))
+                .always("SubgoalPlanner", json("return", "detail"))
+                .on("ResponseBuilder", json("done", "Done."));
+
+        engine.run("Build me a report", null, null, null, model, "PID-route", "web");
+
+        List<AuditEvent> events = audit.viewByPrompt("PID-route").events();
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.ROLE_STARTED
+                && "PlanDetailer".equals(e.role())),
+                "a flagged step must reach PlanDetailer despite an invalid decision word");
+        assertTrue(events.stream().anyMatch(e -> e.type() == AuditEvent.Type.TRANSITION
+                && "PlanDetailReviewer".equals(e.role())
+                && e.transition().contains("'update' -> PlanDetailer")),
+                "the engine routes on the TODO list, recording an 'update' transition");
     }
 
     @Test

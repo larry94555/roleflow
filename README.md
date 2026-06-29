@@ -247,22 +247,41 @@ So a single prompt produces **multiple `llama-server` calls — at least one per
 per plan step for the per-step detail functions.** A signal is analysed for topics and then takes two more
 calls and writes nothing; a request runs through all the roles and writes a **single combined
 goal-and-plan file with per-step detail** (see [Generated_Plans.md](Generated_Plans.md)). If a request is ambiguous, the Clarifier asks a question and waits; your next prompt answers it
-and the flow resumes. Because every role call goes through the shared conversation memory, clarifying
-questions and answers accumulate as context without disrupting the flow.
+and the flow resumes. The whole turn is recorded into the conversation memory as a single exchange (so
+clarifying questions and answers accumulate as context), while the workflow's internal role/function calls
+run statelessly — keeping memory clean so the model doesn't echo its own earlier output (see
+[CURRENT_PROCESS.md](CURRENT_PROCESS.md#relationship-to-memory)).
 
 ### Example (terminal)
 
 ```
 RoleFlow> thanks!
+thinking...                                      <-- shown while the agent works, then replaced
 You're welcome!                                  <-- signal: 2 calls, no files
 
 RoleFlow> Set up a weekly backup of my notes folder
+thinking...
 To make sure I get this right: should the backup run every week indefinitely,
-and where should the copies be stored?           <-- request needed clarification (paused)
-RoleFlow> Yes, weekly forever, store them on my external drive
+and where should the copies be stored?
+waiting for a reply... > Yes, weekly forever, store them on my external drive
+thinking...
 Your request has been turned into a goal and a plan.
-Plan file:  goals/plan_backup-notes_20260625-101500.md   <-- one file: goal section + plan section
+Plan file:  file:///…/goals/plan_backup-notes_20260625-101500.md   <-- clickable: opens the rendered view
+View audit trail (Ctrl+click to open)                          <-- clickable: opens the audit web page
+RoleFlow>
 ```
+
+The prompt makes the state clear: **`thinking...`** is shown while the agent is working (you are not
+expected to type), it is erased when the reply arrives, and the prompt becomes **`waiting for a reply...`**
+when the agent paused for a clarifying answer — otherwise it returns to the ready **`RoleFlow>`** prompt.
+
+Just like the web page, the terminal renders the plan-file and audit links as **clickable hyperlinks**
+(using OSC 8, supported by Windows Terminal, iTerm2, GNOME Terminal, etc.) shown in **blue/underline**:
+the plan link opens the same GitHub-style **rendered** view served at `/goals/<name>`, and the audit link
+opens the live **audit web page** for that prompt (which also opens automatically once per terminal
+session). **Ctrl+click** (Cmd+click on macOS) opens a link. So the command line and the web flow stay in
+sync. Terminals that don't support hyperlinks just show the plain link text; you can disable the escape
+codes with `roleflow.terminal.hyperlinks=false`.
 
 The file name starts with a short, human-readable **prefix** summarizing the session's first prompt
 (`backup-notes`), so files made on the same day are easy to tell apart. The prefix is kept
@@ -369,6 +388,9 @@ and can be overridden on the command line, e.g. `--server.port=9000`. The most u
 | `server.port`             | `8080`                 | Port for the web page and REST API.                      |
 | `roleflow.system-prompt`  | *(empty)*              | Default system prompt (plain mode only, when no workflow loaded). |
 | `roleflow.terminal.enabled` | `true`               | Read prompts from stdin. Set `false` to disable.         |
+| `roleflow.terminal.hyperlinks` | `true`            | Render goal/plan and audit links in the terminal as clickable OSC 8 hyperlinks. |
+| `roleflow.terminal.open-audit` | `true`            | Open the audit web page in the browser once per terminal session. |
+| `roleflow.terminal.base-url` | *(empty)*           | Web base URL for the terminal's links; defaults to `http://localhost:<server.port>`. |
 | `roleflow.config`         | `config/roleflow.active` | Workflow file. Empty/missing → plain single-call mode.  |
 | `roleflow.goals-dir`      | `goals`                | Directory where the combined goal-and-plan files are written. |
 | `roleflow.max-steps`      | `20`                   | Safety cap on role steps processed per prompt.           |

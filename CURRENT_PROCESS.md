@@ -29,8 +29,10 @@ prompt. The model must reply with a single JSON object:
 - `decision` — drives the transition (e.g. `signal`, `request`, `clear`, `unclear`, `cancelled`).
 - `artifact` — for steps that produce a file (goal, plan), the full human-readable content.
 
-Parsing is tolerant: if the model wraps the JSON in prose, the engine extracts the object; if there is no
-JSON at all, the whole reply is treated as the `message`.
+Parsing is tolerant: the engine extracts the object if the model wraps it in prose, accepts raw line breaks
+inside strings, accepts a duplicate key (keeping the first), and tolerates **invalid backslash escapes** such
+as LaTeX (`\( n^2 \)`) — which would otherwise make the whole reply fail to parse and lose the `decision`. If
+there is no JSON at all, the whole reply is treated as the `message`.
 
 ## Transition rules
 
@@ -125,7 +127,8 @@ recommending changes).
 4. **SignalResponse (Responder)** — acknowledges information or replies naturally. → `done`. **No files.**
 5. **HandleRequest (Clarifier)** — makes the success criteria unambiguous. If clear, restates them
    (`clear` → role 6). If not, asks one clarifying question (`unclear` → `await`, pausing for the user). If
-   the user cancelled, acknowledges it (`cancelled` → `done`).
+   the user cancelled, acknowledges it (`cancelled` → `done`). Capped at **one** clarifying question via
+   `Iteration: 2` (see [Iteration](#iteration)), so it can't ask the same thing repeatedly.
 6. **GoalBuilder (Goal author)** — constructs the goal (the criteria for when the request is satisfied,
    one-time or ongoing) and **writes a goal file** to `goals/`. → role 7.
 7. **PlanBuilder (Plan author)** — using the goal, builds a four-phase plan (Preparation, Action,
@@ -283,12 +286,22 @@ calls — for each step — the function mapped to that step's category (its `Ca
 | `request-for-information` | `InformationPlanner` | "request from web" / "research on web" / "process through code" / "process through a tool" / "web and code" |
 | `decision-point` | `DecisionPlanner` | the decision made, or "will ask user" / "request information" / "do tests" |
 
+Each function gets a **focused prompt**: only the single item it is detailing (plus, for PlanDetailer, the
+issue-specific instruction). It is deliberately NOT shown the whole goal/plan, the accumulated step details,
+or the file locations — that surrounding text (which includes earlier functions' code/output) would just be
+copied by a small model instead of classified. So functions declare no `Reads:`.
+
 Each function call is a real model turn through [`RoleFlowEngine`](src/main/java/com/example/roleflow/RoleFlowEngine.java)
 and is recorded in the audit trail **exactly like a role** — `ROLE_STARTED`, `MODEL_REQUEST`,
 `MODEL_RESPONSE`, `ROLE_RESULT`, an `ARTIFACT_WRITTEN` for the updated plan file, and a `TRANSITION` noting
 the `return` to the caller. The function's output is appended to the plan file as one subsection under a new
 `# Step Details` heading; the **high-level plan is left unchanged** — functions only *add* detail (see
 [Generated_Plans.md](Generated_Plans.md)).
+
+A function that picks from a **fixed set of categories** (ActionPlanner, InformationPlanner, DecisionPlanner)
+lists them in a `Classifies:` field. The engine detects which category the reply states and records it as a
+`VALIDATION` event (`classified the step as 'write code'`), so the classification is visible in the audit
+trail; if the reply states none of them, that is recorded too (`did not state a recognized category`).
 
 **PlanDetailer** also calls a function: for each step on PlanDetailReviewer's TODO list it calls
 `SubgoalPlanner`, passing an **extra instruction** ("add the decision points and assumptions it needs" for an
@@ -307,6 +320,10 @@ The detail-refinement loop uses this: **PlanDetailReviewer** (`update` → PlanD
 ResponseBuilder) and **PlanDetailer** (`Iteration: 3`, `limit -> ResponseBuilder`, default → PlanDetailReviewer)
 keep refining the plan until it is sufficiently detailed or three passes have run — whichever comes first.
 (The overall `roleflow.max-steps` safety cap still applies as a backstop.)
+
+**HandleRequest** also uses it (`Iteration: 2`, `limit -> GoalBuilder`): it may ask **one** clarifying
+question (round 1 → `await`), and on the answer (round 2) the cap forces it to proceed, so a model that keeps
+returning `unclear` can never ask the same question forever.
 
 ## What the user experiences
 
@@ -367,10 +384,18 @@ HTML; append `?raw=1` for the unrendered source).
 
 ## Relationship to memory
 
-Every role call is a real turn through the conversation memory, so the workflow's intermediate outputs
-become context for later roles and later prompts. If a session runs long enough to approach the token
-budget, the memory compacts older turns into a summary exactly as described in the README — the workflow
-keeps running on top of that compacted memory.
+A whole turn — the user prompt through all of its roles and per-step function calls — is recorded into the
+conversation memory as a **single exchange** (prompt → the final answer the user sees). The workflow's many
+internal role/function calls run *statelessly*: they read the current memory (so earlier user turns and
+clarifying answers are still context) but are **not** each written back to it.
+
+This is deliberate. Within one request the engine already gives each role the goal, plan, and step details it
+needs through its system prompt, so the roles do not need each other's raw replies in memory. Recording every
+role's reply would instead fill memory with near-duplicate turns (the user prompt is identical across roles),
+which makes a small model **echo its own previous output** rather than perform each role — the source of a
+class of bugs where every role returned the same JSON. Keeping the internal calls out of memory fixes that.
+If a session runs long enough to approach the token budget, the (per-turn) memory still compacts older turns
+into a summary exactly as described in the README.
 
 ## Configuration
 
